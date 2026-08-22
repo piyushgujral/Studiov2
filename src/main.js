@@ -32,7 +32,6 @@ function ensureCaptureVideoElements() {
 
   definitions.forEach(({ id, label }) => {
     let video = document.getElementById(id);
-
     if (video) return;
 
     video = document.createElement('video');
@@ -42,7 +41,6 @@ function ensureCaptureVideoElements() {
     video.playsInline = true;
     video.setAttribute('aria-hidden', 'true');
     video.setAttribute('title', `${label} capture source`);
-
     video.style.position = 'fixed';
     video.style.width = '1px';
     video.style.height = '1px';
@@ -51,25 +49,25 @@ function ensureCaptureVideoElements() {
     video.style.opacity = '0';
     video.style.pointerEvents = 'none';
     video.style.zIndex = '-1';
-
     document.body.appendChild(video);
   });
 }
 
 function normalizeRemoteDeviceLabels() {
-  // Keep the remote-device feature platform-neutral. The same pairing flow
-  // works with phones/tablets instead of being hard-coded to iPhone/iPad.
   const replacements = [
     ['iPhone Link', 'Remote Device'],
     ['iPhone Capture Link', 'Remote Device Capture'],
     ['iPad controls • iPhone captures screen, game audio and microphone', 'One device controls the Studio • another device can capture camera, screen and microphone'],
     ['Create iPhone Pairing Session', 'Create Remote Pairing Session'],
     ['WAITING FOR IPHONE…', 'WAITING FOR REMOTE DEVICE…'],
-    ['iPhone Capture Mode', 'Remote Device Capture Mode'],
-    ['Start iPhone Capture', 'Start Remote Capture'],
     ['WAITING FOR IPHONE', 'WAITING FOR REMOTE DEVICE'],
     ['CONNECTING TO IPHONE', 'CONNECTING TO REMOTE DEVICE'],
-    ['iPhone Connected', 'Remote Device Connected']
+    ['iPhone Connected', 'Remote Device Connected'],
+    ['iPhone Remote Screen', 'Remote Device Screen'],
+    ['PAYUU iPHONE CAPTURE', 'PAYUU REMOTE CAPTURE'],
+    ['Start iPhone Capture', 'Start Remote Capture'],
+    ['iPhone sends its screen and available audio directly to the Payuu Studio running on your iPad.', 'This device can send its camera, screen and microphone directly to the Payuu Studio control device.'],
+    ['Keep this page open. Screen/audio capabilities depend on your iOS/browser version.', 'Keep this page open while capturing. Screen, camera and microphone capabilities depend on the device and browser.']
   ];
 
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -83,25 +81,19 @@ function normalizeRemoteDeviceLabels() {
   });
 
   document.querySelectorAll('[title]').forEach(el => {
-    replacements.forEach(([from, to]) => {
-      el.title = el.title.split(from).join(to);
-    });
+    replacements.forEach(([from, to]) => { el.title = el.title.split(from).join(to); });
   });
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
   window.PAYUU_CONFIG = await loadPayuuConfig();
-
   ensureCaptureVideoElements();
-
   window.payuuStudio = new PayuuStudio();
   normalizeRemoteDeviceLabels();
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
       .register('/sw.js')
-      .catch(err =>
-        console.warn('[Payuu] Service worker registration failed:', err)
-      );
+      .catch(err => console.warn('[Payuu] Service worker registration failed:', err));
   }
 });
