@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  payuu-media-relay:
+    build: .
+    container_name: payuu-media-relay
+    ports:
+      - "8080:8080"
+      - "50000-50050:50000-50050/udp"
+    environment:
+      - PAYUU_ENV=${PAYUU_ENV:-development}
+      - PAYUU_HTTP_PORT=8080
+      # Set PAYUU_AUTH_TOKEN in a .env file next to this compose file (see
+      # .env.example) — do not hardcode real tokens here.
+      - PAYUU_AUTH_TOKEN=${PAYUU_AUTH_TOKEN:-}
+      - PAYUU_STUN_SERVERS=${PAYUU_STUN_SERVERS:-stun:stun.l.google.com:19302}
+      - PAYUU_TURN_SERVER=${PAYUU_TURN_SERVER:-}
+      - PAYUU_TURN_USERNAME=${PAYUU_TURN_USERNAME:-}
+      - PAYUU_TURN_PASSWORD=${PAYUU_TURN_PASSWORD:-}
+      - PAYUU_ALLOWED_ORIGINS=${PAYUU_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    restart: unless-stopped

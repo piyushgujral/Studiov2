@@ -1,0 +1,49 @@
+/* Custom Scrollbars */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 2px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* 16:9 Canvas Preservation */
+.canvas-container {
+  aspect-ratio: 16 / 9;
+}
+/* Remote iPhone capture mode keeps the capture page usable on small screens. */
+.payuu-capture-mode {
+  background: #090c10;
+}
+
+#captureModeBanner button {
+  min-height: 46px;
+  touch-action: manipulation;
+}
+
+@media (max-width: 640px) {
+  #remoteDeviceModal > div { max-height: 92vh; }
+  #remotePairCode { font-size: 2rem; }
+}
+
+/* Payuu Overlay Studio polish */
+#overlayStudioModal input, #overlayStudioModal button { touch-action: manipulation; }
+#overlayStudioModal input[type="color"] { padding: 2px; }
+.overlay-filter { transition: background .15s ease, color .15s ease; }
+@media (max-width: 1024px) {
+  #overlayStudioModal > div { max-height: 96vh; }
+}
+@media (max-width: 640px) {
+  #overlayStudioModal { padding: 6px; }
+  #overlayStudioModal > div { border-radius: 14px; }
+}

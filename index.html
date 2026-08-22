@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payuu Studio — Personal Live Streaming Studio</title>
+  <meta name="theme-color" content="#090c10" />
+  <meta name="application-name" content="Payuu Studio" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Payuu Studio" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              DEFAULT: '#6366f1',
+              hover: '#4f46e5',
+              dark: '#090c10',
+              panel: '#161b22',
+              border: '#30363d',
+              accent: '#22c55e',
+              danger: '#ef4444'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/styles/main.css" />
+</head>
+<body class="h-screen flex flex-col select-none overflow-hidden bg-[#090c10] text-[#e6edf3]">
+
+  <header class="h-12 bg-brand-panel border-b border-brand-border flex items-center justify-between px-3 md:px-4 z-20 shrink-0">
+    <div class="flex items-center space-x-2 md:space-x-3">
+      <div class="flex items-center space-x-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+        <span class="font-black tracking-wider text-sm md:text-base text-white">PAYUU<span class="text-indigo-400">STUDIO</span></span>
+      </div>
+      <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-brand-border font-mono">PERSONAL STUDIO • v1.0</span>
+    </div>
+
+    <div class="hidden sm:flex items-center space-x-4 md:space-x-6 text-xs text-gray-400">
+      <div class="flex items-center space-x-1.5">
+        <span class="w-2 h-2 rounded-full bg-amber-500" id="streamIndicator"></span>
+        <span id="streamStatusText" class="font-semibold text-amber-300">LOCAL PREVIEW</span>
+      </div>
+      <div>FPS: <span id="fpsCounter" class="text-white font-mono">60</span></div>
+      <div>Output: <span class="font-mono text-white">1920×1080 (16:9)</span></div>
+    </div>
+
+    <div class="flex items-center space-x-2">
+      <div class="flex lg:hidden bg-gray-900 border border-brand-border rounded p-0.5 text-xs">
+        <button id="tabToggleLeft" class="px-2 py-0.5 rounded text-gray-300 hover:text-white" title="Scenes & Overlays"><i class="fa-solid fa-layer-group"></i></button>
+        <button id="tabToggleCenter" class="px-2 py-0.5 rounded bg-indigo-600 text-white" title="Studio Canvas"><i class="fa-solid fa-display"></i></button>
+        <button id="tabToggleRight" class="px-2 py-0.5 rounded text-gray-300 hover:text-white" title="Chat & SuperChat"><i class="fa-solid fa-comments"></i></button>
+      </div>
+
+      <button id="btnRemoteDevice" class="px-2.5 py-1 text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-cyan-300 rounded border border-brand-border flex items-center space-x-1.5 transition">
+        <i class="fa-solid fa-mobile-screen-button"></i>
+        <span class="hidden sm:inline">iPhone Link</span>
+      </button>
+
+      <button id="btnOpenSettings" class="px-2.5 py-1 text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-200 rounded border border-brand-border flex items-center space-x-1.5 transition">
+        <i class="fa-solid fa-gear"></i>
+        <span class="hidden sm:inline">Settings</span>
+      </button>
+
+      <button id="btnDevStatus" class="px-2.5 py-1 text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-indigo-300 rounded border border-brand-border flex items-center space-x-1.5 transition">
+        <i class="fa-solid fa-tower-cell"></i>
+        <span class="hidden sm:inline">Diagnostics</span>
+      </button>
+
+      <button id="btnToggleStream" class="px-3 md:px-4 py-1 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded flex items-center space-x-1.5 transition">
+        <i class="fa-solid fa-tower-broadcast"></i>
+        <span id="streamLabel">Start Stream</span>
+      </button>
+    </div>
+  </header>
+
+  <div id="toastNotification" class="hidden fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-indigo-950/95 border border-indigo-500/50 text-indigo-200 text-xs rounded-md shadow-2xl backdrop-blur flex items-center space-x-3 max-w-lg">
+    <i class="fa-solid fa-circle-info text-base" id="toastIcon"></i>
+    <span id="toastMessage" class="flex-1 leading-snug">Notification Message</span>
+    <button id="toastAction" class="hidden px-2 py-1 bg-white/10 hover:bg-white/20 text-white font-semibold rounded text-[11px] underline">Action</button>
+  </div>
+
+  <div id="remoteDeviceModal" class="hidden fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-brand-panel border border-cyan-500/30 rounded-lg shadow-2xl max-w-lg w-full overflow-hidden">
+      <div class="p-3 border-b border-brand-border flex justify-between items-center bg-gray-900/50">
+        <div>
+          <h3 class="text-sm font-bold text-white flex items-center space-x-2"><i class="fa-solid fa-mobile-screen-button text-cyan-400"></i><span>iPhone Capture Link</span></h3>
+          <p class="text-[10px] text-gray-500 mt-0.5">iPad controls • iPhone captures screen, game audio and microphone</p>
+        </div>
+        <button id="btnCloseRemoteDevice" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="p-4 space-y-4">
+        <div id="remoteControlPanel">
+          <p class="text-xs text-gray-300 mb-3">On the iPad, create a pairing session. Then open the displayed link on your iPhone and allow Screen Recording and Microphone access.</p>
+          <button id="btnCreateRemoteSession" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-bold"><i class="fa-solid fa-link mr-1"></i>Create iPhone Pairing Session</button>
+          <div id="remotePairResult" class="hidden mt-4 text-center p-4 rounded bg-black/40 border border-cyan-500/30">
+            <div class="text-[10px] uppercase tracking-widest text-gray-500">Pairing Code</div>
+            <div id="remotePairCode" class="text-4xl font-black tracking-[0.35em] text-cyan-300 font-mono mt-1">------</div>
+            <div class="text-[10px] text-gray-500 mt-2">Enter this code on the iPhone, or use the link below.</div>
+            <input id="remoteJoinUrl" readonly class="w-full mt-3 bg-gray-900 border border-brand-border rounded px-2 py-1.5 text-[10px] text-gray-300 font-mono" />
+            <div id="remotePairStatus" class="text-xs text-amber-300 mt-3">WAITING FOR IPHONE…</div>
+          </div>
+        </div>
+        <div id="remoteCapturePanel" class="hidden">
+          <div class="p-3 rounded bg-cyan-950/20 border border-cyan-500/30">
+            <div class="text-[10px] uppercase tracking-widest text-cyan-300 font-bold">iPhone Capture Mode</div>
+            <p class="text-xs text-gray-300 mt-2">Tap Start Capture. On desktop/Android browsers that support Screen Capture, Payuu can capture the display directly. On iPhone/iPad, browser screen capture support is platform-dependent; for reliable full-device/game capture use the future native Payuu Capture app. Keep this page open while streaming.</p>
+          </div>
+          <button id="btnStartRemoteCapture" class="w-full mt-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-bold"><i class="fa-solid fa-record-vinyl mr-1"></i>Start iPhone Capture</button>
+          <div id="remoteCaptureStatus" class="text-center text-xs text-gray-400 mt-3">READY</div>
+          <div id="remoteCapabilityHint" class="text-[10px] leading-relaxed text-gray-500 mt-3 p-2 rounded bg-black/30 border border-gray-800"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="overlayStudioModal" class="hidden fixed inset-0 z-[55] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 md:p-6">
+    <div class="bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col">
+      <div class="px-4 py-3 border-b border-[#30363d] flex items-center justify-between bg-[#11161d]">
+        <div>
+          <div class="flex items-center gap-2"><i class="fa-solid fa-wand-magic-sparkles text-indigo-400"></i><h3 class="font-bold text-white">Overlay Studio</h3><span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-500/30">PERSONAL</span></div>
+          <p class="text-[10px] text-gray-500 mt-0.5">Build reusable stream graphics, alerts and layouts without leaving Payuu Studio.</p>
+        </div>
+        <button id="btnCloseOverlayStudio" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[260px_1fr_310px]">
+        <div class="border-r border-[#30363d] p-3 overflow-y-auto scrollbar-thin">
+          <div class="flex items-center justify-between mb-2"><span class="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Template Library</span><button id="btnCreateTextOverlay" class="text-[10px] text-indigo-400 hover:text-white">+ Text</button></div>
+          <div id="overlayTemplateGrid" class="space-y-2"></div>
+          <div class="mt-4 pt-3 border-t border-[#30363d] space-y-2">
+            <button id="btnDuplicateOverlay" class="w-full py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-white"><i class="fa-solid fa-copy mr-1"></i>Duplicate Active</button>
+            <button id="btnExportOverlay" class="w-full py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-white"><i class="fa-solid fa-download mr-1"></i>Export Overlay</button>
+            <label class="block w-full py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-white text-center cursor-pointer"><i class="fa-solid fa-upload mr-1"></i>Import Overlay<input id="overlayImportFile" type="file" accept="application/json,.json" class="hidden"></label>
+          </div>
+        </div>
+        <div class="p-4 overflow-y-auto scrollbar-thin bg-[#090c10]">
+          <div class="flex items-center justify-between mb-3"><div><span class="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Quick Sources</span><p class="text-[11px] text-gray-400 mt-1">Use templates as starting points, then customize the active overlay.</p></div><div class="flex gap-1"><button class="overlay-filter px-2 py-1 text-[10px] rounded bg-indigo-600 text-white" data-cat="all">All</button><button class="overlay-filter px-2 py-1 text-[10px] rounded bg-gray-800 text-gray-400" data-cat="Gaming">Gaming</button><button class="overlay-filter px-2 py-1 text-[10px] rounded bg-gray-800 text-gray-400" data-cat="Branding">Branding</button><button class="overlay-filter px-2 py-1 text-[10px] rounded bg-gray-800 text-gray-400" data-cat="Alerts">Alerts</button></div></div>
+          <div id="overlayEditorEmpty" class="hidden h-64 items-center justify-center text-center text-gray-500"><div><i class="fa-regular fa-square-plus text-3xl mb-2"></i><p class="text-xs">Choose a template or create a text overlay.</p></div></div>
+          <div id="overlayEditor" class="space-y-4"></div>
+        </div>
+        <div class="border-l border-[#30363d] p-3 overflow-y-auto scrollbar-thin">
+          <div class="flex items-center justify-between mb-3"><span class="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Active Overlay</span><button id="btnDeleteOverlay" class="text-red-400 hover:text-red-300 text-[10px]"><i class="fa-solid fa-trash mr-1"></i>Delete</button></div>
+          <div id="activeOverlayCard" class="space-y-3"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-brand-panel border border-brand-border rounded-lg shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+      <div class="p-3 border-b border-brand-border flex justify-between items-center bg-gray-900/50">
+        <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+          <i class="fa-solid fa-sliders text-indigo-400"></i>
+          <span>Streaming & WHIP Relay Settings</span>
+        </h3>
+        <button id="btnCloseSettings" class="text-gray-400 hover:text-white text-xs"><i class="fa-solid fa-xmark text-sm"></i></button>
+      </div>
+
+      <div class="p-4 overflow-y-auto scrollbar-thin space-y-5 text-xs">
+        
+        <div class="p-3 rounded bg-indigo-950/20 border border-indigo-500/30 space-y-2">
+          <div class="flex justify-between items-center">
+            <h4 class="font-bold text-indigo-300 uppercase text-[11px] tracking-wider flex items-center space-x-1.5">
+              <i class="fa-solid fa-tower-cell"></i>
+              <span>Payuu WHIP Relay Ingest (RFC 9335)</span>
+            </h4>
+            <span class="text-[10px] text-gray-400 font-mono">WebRTC Ingest</span>
+          </div>
+          <p class="text-[11px] text-gray-300">Enter your Payuu Media Relay WHIP endpoint to publish the clean video/audio stream over WebRTC.</p>
+          
+          <div class="space-y-2 pt-1">
+            <div>
+              <label class="text-[10px] text-gray-400 uppercase tracking-wider block">WHIP Endpoint URL</label>
+              <input type="text" id="settingWhipEndpoint" placeholder="https://stream.your-payuu-domain.com/api/whip/endpoint" class="w-full bg-gray-900 border border-brand-border rounded px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" />
+            </div>
+            <div>
+              <label class="text-[10px] text-gray-400 uppercase tracking-wider block">Bearer Authorization Token (Optional)</label>
+              <input type="password" id="settingWhipToken" placeholder="Development/session token" class="w-full bg-gray-900 border border-brand-border rounded px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" autocomplete="off" />
+              <p class="text-[9px] text-gray-500 mt-1">For personal use. Production should replace this with a short-lived account/session token.</p>
+            </div>
+            <div>
+              <label class="text-[10px] text-gray-400 uppercase tracking-wider block">WebRTC ICE Servers (JSON)</label>
+              <textarea id="settingIceServers" rows="3" class="w-full bg-gray-900 border border-brand-border rounded px-2.5 py-1.5 text-[10px] text-white font-mono" placeholder='[{"urls":"stun:stun.l.google.com:19302"}]'></textarea>
+              <p class="text-[9px] text-gray-500 mt-1">Add your TURN server here for reliable iPhone/iPad pairing across different networks.</p>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex justify-between items-center mb-2">
+            <div>
+              <h4 class="font-bold text-white uppercase text-[11px] tracking-wider">Streaming Destinations (Egress Config)</h4>
+              <p class="text-[10px] text-gray-400">Configure target platforms for the future Payuu Media Relay fanout.</p>
+            </div>
+            <button id="btnAddCustomDest" class="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-semibold flex items-center space-x-1">
+              <i class="fa-solid fa-plus"></i>
+              <span>Add Custom RTMP</span>
+            </button>
+          </div>
+          <div class="space-y-2" id="settingsDestinationsList"></div>
+        </div>
+
+        <div class="border-t border-brand-border pt-4">
+          <h4 class="font-bold text-white uppercase text-[11px] tracking-wider mb-2">Compositor Video Quality</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-[10px] text-gray-400 block mb-1">Canvas Resolution</label>
+              <select id="settingResolution" class="w-full bg-gray-900 border border-brand-border rounded px-2 py-1.5 text-xs text-white">
+                <option value="1920x1080">1920×1080 (1080p Full HD)</option>
+                <option value="1280x720">1280×720 (720p HD)</option>
+                <option value="854x480">854×480 (480p SD)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[10px] text-gray-400 block mb-1">Target Frame Rate (FPS)</label>
+              <select id="settingFps" class="w-full bg-gray-900 border border-brand-border rounded px-2 py-1.5 text-xs text-white">
+                <option value="60">60 FPS</option>
+                <option value="30">30 FPS</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[10px] text-gray-400 block mb-1">Video Bitrate (Kbps)</label>
+              <input type="number" id="settingVideoBitrate" value="6000" class="w-full bg-gray-900 border border-brand-border rounded px-2 py-1.5 text-xs text-white font-mono" />
+            </div>
+            <div>
+              <label class="text-[10px] text-gray-400 block mb-1">Audio Bitrate (Kbps)</label>
+              <input type="number" id="settingAudioBitrate" value="160" class="w-full bg-gray-900 border border-brand-border rounded px-2 py-1.5 text-xs text-white font-mono" />
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="p-3 border-t border-brand-border bg-gray-900/50 flex justify-end">
+        <button onclick="document.getElementById('settingsModal').classList.add('hidden')" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="devStatusModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-brand-panel border border-brand-border rounded-lg shadow-2xl max-w-lg w-full p-4 overflow-hidden">
+      <div class="flex justify-between items-center border-b border-brand-border pb-3 mb-3">
+        <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+          <i class="fa-solid fa-tower-cell text-indigo-400"></i>
+          <span>WHIP Ingest & WebRTC Diagnostics</span>
+        </h3>
+        <button id="btnCloseDevModal" class="text-gray-400 hover:text-white text-xs"><i class="fa-solid fa-xmark text-sm"></i></button>
+      </div>
+      
+      <div class="mb-4">
+        <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">WebRTC WHIP Pipeline State</div>
+        <div class="bg-black/40 rounded border border-brand-border p-2.5 space-y-1.5 text-xs font-mono">
+          <div class="flex justify-between">
+            <span class="text-gray-400">WHIP Endpoint:</span>
+            <span id="diagWhipEndpoint" class="text-amber-400 font-mono">NOT CONFIGURED</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Engine State:</span>
+            <span id="diagStreamState" class="text-indigo-300 font-bold">PREVIEW</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Peer Connection:</span>
+            <span id="diagPeerState" class="text-gray-300">new</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">ICE State:</span>
+            <span id="diagIceState" class="text-gray-300">new</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Clean Video Track:</span>
+            <span id="diagVideoTrack" class="text-emerald-400">NO</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Clean Audio Track:</span>
+            <span id="diagAudioTrack" class="text-emerald-400">NO</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Client Environment</div>
+        <div class="bg-black/40 rounded border border-brand-border p-2 space-y-1.5 text-xs font-mono">
+          <div class="flex justify-between">
+            <span class="text-gray-400">Secure Context:</span>
+            <span id="diagSecure" class="text-emerald-400 font-bold">--</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Camera Source:</span>
+            <span id="diagCamStatus" class="text-gray-400">INACTIVE</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Screen Source:</span>
+            <span id="diagScreenStatus" class="text-gray-400">INACTIVE</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-400">Microphone:</span>
+            <span id="diagMicStatus" class="text-gray-400">INACTIVE</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-right">
+        <button onclick="document.getElementById('devStatusModal').classList.add('hidden')" class="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-white rounded text-xs">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <main class="flex-1 flex overflow-hidden relative">
+    
+    <aside id="leftPanel" class="w-full lg:w-60 bg-brand-panel border-r border-brand-border flex flex-col shrink-0 lg:flex absolute lg:relative inset-0 z-10 lg:z-auto">
+      <div class="p-2.5 border-b border-brand-border flex justify-between items-center bg-gray-900/40">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Scenes</span>
+      </div>
+      <div class="flex-1 overflow-y-auto scrollbar-thin p-1.5 space-y-1" id="sceneList"></div>
+
+      <div class="p-2.5 border-t border-b border-brand-border flex justify-between items-center bg-gray-900/40">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Overlays</span><button id="btnOpenOverlayStudio" class="text-indigo-400 hover:text-white text-[10px]" title="Open Overlay Studio"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+      </div>
+      <div class="h-36 overflow-y-auto scrollbar-thin p-1.5 space-y-1" id="overlayList"></div>
+    </aside>
+
+    <section id="centerPanel" class="flex-1 flex flex-col bg-[#0b0e14] p-2 md:p-4 overflow-hidden relative">
+      <div class="flex-1 flex items-center justify-center relative min-h-0">
+        <div class="canvas-container w-full max-w-5xl bg-black rounded-lg border border-brand-border shadow-2xl relative overflow-hidden flex items-center justify-center">
+          <canvas id="studioCanvas" width="1920" height="1080" class="w-full h-full object-contain cursor-crosshair"></canvas>
+          
+          <div id="noSourceOverlay" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-black/85 text-gray-500 space-y-2 pointer-events-none">
+            <i class="fa-solid fa-video-slash text-3xl text-gray-600"></i>
+            <p class="text-xs font-medium tracking-wide text-gray-400">NO ACTIVE VIDEO FEED IN THIS SCENE</p>
+            <p class="text-[11px] text-gray-600">Click "Enable Camera" or "Share Screen" below</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside id="rightPanel" class="w-full lg:w-80 bg-brand-panel border-l border-brand-border hidden lg:flex flex-col shrink-0 absolute lg:relative inset-0 z-10 lg:z-auto">
+      <div class="flex border-b border-brand-border bg-gray-900/50 text-[11px]" id="chatTabs">
+        <button data-filter="all" class="flex-1 py-2 font-semibold text-indigo-400 border-b-2 border-indigo-500 chat-tab-btn">ALL</button>
+        <button data-filter="youtube" class="flex-1 py-2 font-semibold text-gray-400 hover:text-gray-200 chat-tab-btn">YouTube</button>
+        <button data-filter="kick" class="flex-1 py-2 font-semibold text-gray-400 hover:text-gray-200 chat-tab-btn">KICK</button>
+        <button data-filter="twitch" class="flex-1 py-2 font-semibold text-gray-400 hover:text-gray-200 chat-tab-btn">Twitch</button>
+        <button data-filter="superchat" class="flex-1 py-2 font-semibold text-amber-400 hover:text-amber-300 chat-tab-btn">★ SuperChat</button>
+      </div>
+
+      <div class="p-2.5 bg-gradient-to-r from-amber-950/30 to-indigo-950/30 border-b border-amber-500/20">
+        <div class="flex justify-between items-center text-xs mb-1">
+          <span class="font-bold text-amber-300 flex items-center space-x-1.5">
+            <i class="fa-solid fa-bolt"></i>
+            <span>Payuu SuperChat</span>
+          </span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/30 text-amber-400 font-mono">DEMO ONLY</span>
+        </div>
+        <div class="p-2 bg-black/40 rounded border border-amber-500/20 text-xs">
+          <div class="flex justify-between font-semibold">
+            <span class="text-amber-200" id="scSupporterName">Rahul V.</span>
+            <span class="text-emerald-400 font-mono" id="scAmount">₹100</span>
+          </div>
+          <p class="text-[11px] text-gray-300 mt-1" id="scMessage">Amazing stream! Keep it up! 🔥</p>
+          <div class="mt-2 flex justify-end space-x-1.5">
+            <button id="btnTriggerAlert" class="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-[10px] font-semibold flex items-center space-x-1 transition">
+              <i class="fa-solid fa-bullhorn"></i>
+              <span>Trigger Alert</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-1 px-2.5 bg-gray-900/30 border-b border-brand-border/60 flex justify-between items-center">
+        <span class="text-[10px] uppercase font-bold text-gray-500">Live Messages</span>
+        <span class="text-[9px] text-gray-500 font-mono">Demo Mode</span>
+      </div>
+      <div class="flex-1 p-2.5 overflow-y-auto scrollbar-thin space-y-2 text-xs" id="chatFeed"></div>
+
+      <div class="p-2 border-t border-brand-border bg-gray-900/30">
+        <form id="chatForm" class="relative flex">
+          <input type="text" id="chatInput" placeholder="Send simulated chat message..." class="w-full bg-black/50 border border-brand-border rounded px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+          <button type="submit" class="absolute right-2 top-2 text-gray-400 hover:text-white text-xs"><i class="fa-solid fa-paper-plane"></i></button>
+        </form>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="h-44 bg-brand-panel border-t border-brand-border grid grid-cols-1 md:grid-cols-12 gap-2 p-2.5 z-20 shrink-0 overflow-y-auto md:overflow-hidden">
+    
+    <div class="md:col-span-4 md:border-r border-brand-border md:pr-2.5 flex flex-col justify-between">
+      <div>
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Sources</span>
+          <div class="flex space-x-1">
+            <button id="btnToggleCamera" class="px-2 py-1 text-[11px] rounded bg-gray-800 hover:bg-gray-700 border border-brand-border text-gray-200 flex items-center space-x-1 transition">
+              <i class="fa-solid fa-camera"></i>
+              <span id="cameraBtnText">Enable Camera</span>
+            </button>
+            <button id="btnToggleScreen" class="px-2 py-1 text-[11px] rounded bg-gray-800 hover:bg-gray-700 border border-brand-border text-gray-200 flex items-center space-x-1 transition">
+              <i class="fa-solid fa-desktop"></i>
+              <span id="screenBtnText">Share Screen</span>
+            </button>
+          </div>
+        </div>
+        
+        <div class="space-y-1 text-xs" id="activeSourceList">
+          <div id="sourceCardCamera" class="hidden p-1.5 rounded bg-gray-800/40 border border-brand-border flex justify-between items-center">
+            <div class="flex items-center space-x-1.5">
+              <i class="fa-solid fa-video text-indigo-400 text-xs"></i>
+              <span class="text-[11px] font-medium">Camera Layer</span>
+            </div>
+            <div class="flex items-center space-x-2 text-gray-400 text-xs">
+              <button id="btnLockCamera" class="hover:text-white p-0.5" title="Lock transformation"><i class="fa-solid fa-unlock"></i></button>
+              <button id="btnHideCamera" class="hover:text-white p-0.5" title="Toggle visibility"><i class="fa-solid fa-eye"></i></button>
+            </div>
+          </div>
+          <div id="sourceCardScreen" class="hidden p-1.5 rounded bg-gray-800/40 border border-brand-border flex justify-between items-center">
+            <div class="flex items-center space-x-1.5">
+              <i class="fa-solid fa-display text-emerald-400 text-xs"></i>
+              <span class="text-[11px] font-medium">Display Capture</span>
+            </div>
+            <div class="flex items-center space-x-2 text-gray-400 text-xs">
+              <button id="btnHideScreen" class="hover:text-white p-0.5" title="Toggle screen layer visibility"><i class="fa-solid fa-eye"></i></button>
+            </div>
+          </div>
+          <div id="sourceCardRemote" class="hidden p-1.5 rounded bg-cyan-950/20 border border-cyan-500/30 flex justify-between items-center">
+            <div class="flex items-center space-x-1.5"><i class="fa-solid fa-mobile-screen-button text-cyan-400 text-xs"></i><span class="text-[11px] font-medium">iPhone Remote Screen</span></div>
+            <span id="remoteSourceStatus" class="text-[9px] text-cyan-300 font-mono">CONNECTED</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="cameraControlsHint" class="text-[10px] text-gray-500 flex justify-between items-center border-t border-brand-border/60 pt-1">
+        <span>Camera: <span id="camCoordsText" class="font-mono text-gray-400">1440, 792 (440×248)</span></span>
+        <button id="btnResetCamPos" class="text-indigo-400 hover:underline">Reset PIP</button>
+      </div>
+    </div>
+
+    <div class="md:col-span-4 md:border-r border-brand-border md:px-2.5 flex flex-col justify-between">
+      <div>
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Audio Mixer</span>
+          <button id="btnToggleMicMeter" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold transition">Enable Mic Meter</button>
+        </div>
+        <div class="space-y-2">
+          <div>
+            <div class="flex justify-between text-[11px] mb-0.5">
+              <span class="text-gray-300 flex items-center space-x-1"><i class="fa-solid fa-microphone text-[10px]"></i><span>Microphone</span></span>
+              <span id="micDbLevel" class="font-mono text-gray-400 text-[10px]">-∞ dB</span>
+            </div>
+            <div class="w-full bg-gray-800 h-1.5 rounded overflow-hidden">
+              <div id="micMeterBar" class="h-full bg-emerald-500 w-0 transition-all duration-75"></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex justify-between text-[11px] mb-0.5">
+              <span class="text-gray-300 flex items-center space-x-1"><i class="fa-solid fa-headphones text-[10px]"></i><span>System Audio</span></span>
+              <span id="sysAudioStatusText" class="font-mono text-gray-500 text-[10px]">Not Available</span>
+            </div>
+            <div class="w-full bg-gray-800 h-1.5 rounded overflow-hidden">
+              <div id="sysMeterBar" class="h-full bg-gray-600 w-0"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="text-[10px] text-gray-500">Audio metering is local. Audio streaming not started.</div>
+    </div>
+
+    <div class="md:col-span-4 md:pl-2.5 flex flex-col justify-between">
+      <div>
+        <div class="flex justify-between items-center">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Streaming Platforms</span>
+          <button onclick="document.getElementById('settingsModal').classList.remove('hidden')" class="text-[10px] text-indigo-400 hover:underline">Manage</button>
+        </div>
+        <div class="mt-1.5 space-y-1 text-xs" id="footerDestinationList"></div>
+      </div>
+      <div class="text-[10px] text-gray-500 font-mono text-right">Compositor: 1920×1080 Master</div>
+    </div>
+  </footer>
+
+  <video id="rawCameraVideo" autoplay playsinline muted class="hidden"></video>
+  <video id="rawScreenVideo" autoplay playsinline muted class="hidden"></video>
+  <video id="remoteDeviceVideo" autoplay playsinline class="hidden"></video>
+
+  
+  <div id="captureModeBanner" class="hidden fixed inset-0 z-[100] bg-[#090c10] flex items-center justify-center p-5">
+    <div class="max-w-md w-full text-center">
+      <div class="w-16 h-16 mx-auto rounded-2xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-center"><i class="fa-solid fa-mobile-screen-button text-3xl text-cyan-300"></i></div>
+      <h1 class="text-xl font-black text-white mt-5">PAYUU iPHONE CAPTURE</h1>
+      <p class="text-xs text-gray-400 mt-2">Your iPhone sends its screen and available audio directly to the Payuu Studio running on your iPad.</p>
+      <div class="mt-5 p-3 rounded-lg bg-gray-900 border border-brand-border text-left">
+        <div class="text-[10px] text-gray-500 uppercase tracking-widest">Pairing code</div>
+        <div id="captureModeCode" class="text-2xl font-black tracking-[0.3em] text-cyan-300 font-mono mt-1"></div>
+      </div>
+      <button id="btnCaptureModeStart" class="w-full mt-4 py-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-bold">Start iPhone Capture</button>
+      <div id="captureModeStatus" class="text-xs text-gray-500 mt-3">READY</div>
+      <p class="text-[10px] text-gray-600 mt-6">Keep this page open. Screen/audio capabilities depend on your iOS/browser version.</p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

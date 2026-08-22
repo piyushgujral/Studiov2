@@ -1,0 +1,24 @@
+# Replace the hostnames before deployment.
+# Caddy provides HTTPS/TLS for the Studio and relay.
+
+studio.example.com {
+    root * /srv/payuu-studio/dist
+    encode gzip zstd
+    header {
+        Permissions-Policy "camera=(self), microphone=(self), display-capture=(self)"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+    try_files {path} /index.html
+    file_server
+}
+
+stream.example.com {
+    reverse_proxy payuu-media-relay:8080
+    header {
+        Permissions-Policy "camera=(self), microphone=(self), display-capture=(self)"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Content-Type-Options "nosniff"
+    }
+}

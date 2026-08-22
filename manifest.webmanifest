@@ -1,0 +1,10 @@
+{
+  "name": "Payuu Studio",
+  "short_name": "Payuu Studio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090c10",
+  "theme_color": "#090c10",
+  "orientation": "any",
+  "description": "Personal live streaming studio with camera, screen capture, scenes, overlays and multi-destination streaming."
+}
