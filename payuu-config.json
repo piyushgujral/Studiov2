@@ -1,0 +1,8 @@
+{
+  "apiBase": "https://payuu-remote-signaling.piyushgujral04.workers.dev",
+  "whipEndpoint": "",
+  "authToken": "",
+  "iceServers": [
+    { "urls": "stun:stun.l.google.com:19302" }
+  ]
+}
