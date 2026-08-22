@@ -14,7 +14,9 @@ export class RemoteDeviceManager {
     this.remoteStream = null;
     this.remoteScreenStream = new MediaStream();
     this.remoteCameraStream = new MediaStream();
-    this.remoteVideoCount = 0;
+    this.remoteAudioStream = new MediaStream();
+    this.remoteScreenStreamId = '';
+    this.remoteCameraStreamId = '';
     this.pollTimer = null;
     this.running = false;
     this.onStatus = null;
@@ -83,9 +85,7 @@ export class RemoteDeviceManager {
     this.sessionId = sessionId || this.sessionId;
     this.code = String(code || '').trim().toUpperCase();
 
-    if (!this.code && this.sessionId) {
-      await this.resolveCaptureSession();
-    }
+    if (!this.code && this.sessionId) await this.resolveCaptureSession();
     if (!this.code) throw new Error('Pairing code could not be retrieved.');
 
     if (!this.sessionId) {
@@ -104,6 +104,8 @@ export class RemoteDeviceManager {
     let screen = null;
     let cameraMic = null;
 
+    // Screen capture is optional. Camera/microphone must still be sent if iOS
+    // does not expose or grant display capture.
     if (navigator.mediaDevices.getDisplayMedia) {
       try {
         screen = await navigator.mediaDevices.getDisplayMedia({
@@ -111,9 +113,7 @@ export class RemoteDeviceManager {
           audio: true
         });
       } catch (e) {
-        if (!['AbortError', 'NotAllowedError'].includes(e?.name)) {
-          console.warn('[Payuu Remote] screen capture', e);
-        }
+        console.warn('[Payuu Remote] screen capture unavailable:', e?.name, e?.message || e);
       }
     }
 
@@ -131,7 +131,7 @@ export class RemoteDeviceManager {
         }
       });
     } catch (e) {
-      console.warn('[Payuu Remote] camera + microphone', e);
+      console.warn('[Payuu Remote] camera + microphone:', e);
       try {
         cameraMic = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -142,15 +142,13 @@ export class RemoteDeviceManager {
           video: false
         });
       } catch (micErr) {
-        console.warn('[Payuu Remote] microphone', micErr);
+        console.warn('[Payuu Remote] microphone fallback:', micErr);
       }
     }
 
     const combined = new MediaStream();
-    screen?.getVideoTracks().forEach(track => combined.addTrack(track));
-    cameraMic?.getVideoTracks().forEach(track => combined.addTrack(track));
-    screen?.getAudioTracks().forEach(track => combined.addTrack(track));
-    cameraMic?.getAudioTracks().forEach(track => combined.addTrack(track));
+    screen?.getTracks().forEach(track => combined.addTrack(track));
+    cameraMic?.getTracks().forEach(track => combined.addTrack(track));
 
     if (!combined.getTracks().length) {
       throw new Error('No capture tracks were granted. Allow camera, microphone and/or screen access.');
@@ -163,10 +161,11 @@ export class RemoteDeviceManager {
 
     await this.createPeer();
 
-    screen?.getVideoTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
-    cameraMic?.getVideoTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
-    screen?.getAudioTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
-    cameraMic?.getAudioTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
+    // Use addTrack(track, stream) instead of bare transceivers. This preserves
+    // stream identity in the remote ontrack event, so camera and screen cannot
+    // be mistaken for each other when screen capture is unavailable.
+    screen?.getTracks().forEach(track => this.pc.addTrack(track, screen));
+    cameraMic?.getTracks().forEach(track => this.pc.addTrack(track, cameraMic));
 
     await this.pc.setLocalDescription(await this.pc.createOffer());
     await this.waitForIce();
@@ -187,9 +186,9 @@ export class RemoteDeviceManager {
     return {
       sessionId: this.sessionId,
       code: this.code,
-      hasScreen: !!screen,
+      hasScreen: !!screen?.getVideoTracks().length,
       hasCamera: !!cameraMic?.getVideoTracks().length,
-      hasAudio: combined.getAudioTracks().length > 0
+      hasAudio: !!cameraMic?.getAudioTracks().length || !!screen?.getAudioTracks().length
     };
   }
 
@@ -197,7 +196,9 @@ export class RemoteDeviceManager {
     this.stopPeer(false);
     this.remoteScreenStream = new MediaStream();
     this.remoteCameraStream = new MediaStream();
-    this.remoteVideoCount = 0;
+    this.remoteAudioStream = new MediaStream();
+    this.remoteScreenStreamId = '';
+    this.remoteCameraStreamId = '';
 
     this.pc = new RTCPeerConnection({
       iceServers: this.iceServers,
@@ -214,37 +215,57 @@ export class RemoteDeviceManager {
       this.setStatus(`ICE_${String(this.pc?.iceConnectionState || 'closed').toUpperCase()}`);
     };
 
-    this.pc.ontrack = event => this.handleRemoteTrack(event.track);
+    this.pc.ontrack = event => this.handleRemoteTrack(event);
   }
 
-  handleRemoteTrack(track) {
-    if (track.kind === 'audio') {
-      this.remoteScreenStream.addTrack(track);
-      this.publishRemoteStreams();
-      return;
+  handleRemoteTrack(event) {
+    const track = event.track;
+    const stream = event.streams?.[0] || null;
+    const streamId = stream?.id || '';
+
+    if (streamId) {
+      if (track.kind === 'video') {
+        // First video stream received from the capture device is the screen
+        // stream when screen capture exists; the camera stream is separate.
+        // Stream identity now makes this deterministic even when screen is absent.
+        if (!this.remoteScreenStreamId && stream.getVideoTracks().length) {
+          this.remoteScreenStreamId = streamId;
+        }
+        if (streamId === this.remoteScreenStreamId) {
+          this.remoteScreenStream.addTrack(track);
+        } else {
+          this.remoteCameraStreamId = streamId;
+          this.remoteCameraStream.addTrack(track);
+        }
+      } else if (track.kind === 'audio') {
+        this.remoteAudioStream.addTrack(track);
+        if (streamId === this.remoteScreenStreamId) this.remoteScreenStream.addTrack(track);
+        if (streamId === this.remoteCameraStreamId) this.remoteCameraStream.addTrack(track);
+      }
+    } else {
+      // Fallback for streamless remote tracks.
+      if (track.kind === 'audio') this.remoteAudioStream.addTrack(track);
+      else if (!this.remoteScreenStream.getVideoTracks().length) this.remoteScreenStream.addTrack(track);
+      else this.remoteCameraStream.addTrack(track);
     }
 
-    this.remoteVideoCount += 1;
-    const target = this.remoteVideoCount === 1
-      ? this.remoteScreenStream
-      : this.remoteCameraStream;
-    target.addTrack(track);
     this.publishRemoteStreams();
   }
 
   publishRemoteStreams() {
     const screenVideo = document.getElementById('rawScreenVideo');
     const cameraVideo = document.getElementById('rawCameraVideo');
-    const screen = this.remoteScreenStream;
-    const camera = this.remoteCameraStream;
+    const remoteAudio = document.getElementById('remoteDeviceAudio');
 
-    if (screenVideo && screen.getVideoTracks().length) {
-      screenVideo.srcObject = screen;
+    if (screenVideo && this.remoteScreenStream.getVideoTracks().length) {
+      screenVideo.srcObject = this.remoteScreenStream;
+      screenVideo.muted = true;
       screenVideo.play().catch(() => {});
     }
 
-    if (cameraVideo && camera.getVideoTracks().length) {
-      cameraVideo.srcObject = camera;
+    if (cameraVideo && this.remoteCameraStream.getVideoTracks().length) {
+      cameraVideo.srcObject = this.remoteCameraStream;
+      cameraVideo.muted = true;
       cameraVideo.play().catch(() => {});
 
       const studio = window.payuuStudio;
@@ -257,16 +278,27 @@ export class RemoteDeviceManager {
         studio.updatePlaceholderVisibility?.();
       }
 
-      this.onRemoteCamera?.(camera);
+      this.onRemoteCamera?.(this.remoteCameraStream);
     }
 
-    if (screen.getVideoTracks().length) {
+    if (remoteAudio && this.remoteAudioStream.getAudioTracks().length) {
+      remoteAudio.srcObject = this.remoteAudioStream;
+      remoteAudio.muted = false;
+      remoteAudio.volume = 1;
+      remoteAudio.play().catch(err => {
+        console.warn('[Payuu Remote] remote audio autoplay blocked:', err);
+        this.setStatus('WEBRTC_AUDIO_CONNECTED_CLICK_TO_PLAY');
+      });
+    }
+
+    if (this.remoteScreenStream.getVideoTracks().length) {
       const remoteProgramStream = new MediaStream([
-        ...screen.getVideoTracks(),
-        ...screen.getAudioTracks()
+        ...this.remoteScreenStream.getVideoTracks(),
+        ...this.remoteAudioStream.getAudioTracks()
       ]);
       if (this.remoteVideo) {
         this.remoteVideo.srcObject = remoteProgramStream;
+        this.remoteVideo.muted = true;
         this.remoteVideo.play().catch(() => {});
       }
       this.onRemoteStream?.(remoteProgramStream);
@@ -391,8 +423,10 @@ export class RemoteDeviceManager {
     this.remoteStream = null;
     this.remoteScreenStream?.getTracks().forEach(track => track.stop());
     this.remoteCameraStream?.getTracks().forEach(track => track.stop());
+    this.remoteAudioStream?.getTracks().forEach(track => track.stop());
     this.remoteScreenStream = new MediaStream();
     this.remoteCameraStream = new MediaStream();
+    this.remoteAudioStream = new MediaStream();
     this.sessionId = '';
     this.code = '';
     this.setStatus('DISCONNECTED');
