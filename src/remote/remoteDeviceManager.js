@@ -266,7 +266,7 @@ export class RemoteDeviceManager {
           `${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/offer?code=${encodeURIComponent(this.code)}`,
           { headers: this.getHeaders() }
         );
-        if (r.ok) {
+        if (r.status === 200) {
           const d = await r.json();
           if (d.sdp) {
             await this.createPeer();
@@ -307,7 +307,7 @@ export class RemoteDeviceManager {
           `${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/answer?code=${encodeURIComponent(this.code)}`,
           { headers: this.getHeaders() }
         );
-        if (r.ok) {
+        if (r.status === 200) {
           const d = await r.json();
           if (d.sdp) {
             await this.pc.setRemoteDescription({ type: 'answer', sdp: d.sdp });
