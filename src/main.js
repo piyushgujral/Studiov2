@@ -1,5 +1,8 @@
 import { PayuuStudio } from './studio.js';
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
+const basePath = (path) => `${BASE_URL}${String(path).replace(/^\//, '')}`;
+
 async function loadPayuuConfig() {
   const fallback = {
     apiBase: window.location.origin,
@@ -9,7 +12,7 @@ async function loadPayuuConfig() {
   };
 
   try {
-    const response = await fetch('/payuu-config.json', { cache: 'no-store' });
+    const response = await fetch(basePath('payuu-config.json'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const config = await response.json();
     return {
@@ -93,7 +96,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
-      .register('/sw.js')
+      .register(basePath('sw.js'))
       .catch(err => console.warn('[Payuu] Service worker registration failed:', err));
   }
 });
