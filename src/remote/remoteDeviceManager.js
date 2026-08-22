@@ -49,6 +49,19 @@ export class RemoteDeviceManager {
     return headers;
   }
 
+  async resolveCaptureSession() {
+    if (this.role !== 'capture' || !this.sessionId || this.code) return;
+    const r = await fetch(
+      `${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/info`,
+      { headers: this.getHeaders(), cache: 'no-store' }
+    );
+    if (!r.ok) throw new Error('Pairing session not found or expired.');
+    const d = await r.json();
+    if (!d.code) throw new Error('Pairing code could not be retrieved.');
+    this.code = String(d.code).trim().toUpperCase();
+    this.onCode?.(d);
+  }
+
   async createControlSession() {
     const r = await fetch(`${this.apiBase}/api/remote/session`, {
       method: 'POST',
@@ -67,10 +80,15 @@ export class RemoteDeviceManager {
 
   async joinCaptureSession(code = this.code, sessionId = this.sessionId) {
     this.role = 'capture';
+    this.sessionId = sessionId || this.sessionId;
     this.code = String(code || '').trim().toUpperCase();
-    if (!this.code) throw new Error('Enter the 6-character pairing code from the control device.');
 
-    if (!sessionId) {
+    if (!this.code && this.sessionId) {
+      await this.resolveCaptureSession();
+    }
+    if (!this.code) throw new Error('Pairing code could not be retrieved.');
+
+    if (!this.sessionId) {
       const r = await fetch(
         `${this.apiBase}/api/remote/session?code=${encodeURIComponent(this.code)}`,
         { headers: this.getHeaders() }
