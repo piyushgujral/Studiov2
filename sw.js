@@ -1,4 +1,4 @@
-const CACHE = 'payuu-studio-v2';
+const CACHE = 'payuu-studio-v3';
 const BASE = self.registration.scope;
 const APP_SHELL = [BASE, `${BASE}index.html`, `${BASE}manifest.webmanifest`];
 
