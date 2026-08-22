@@ -1,14 +1,33 @@
-const ALLOWED_ORIGIN = 'https://piyushgujral.github.io';
 const SESSION_TTL_SECONDS = 600;
 
+function allowedOrigin(origin) {
+  if (!origin) return '';
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    if (url.protocol !== 'https:' && host !== 'localhost' && host !== '127.0.0.1') return '';
+    if (
+      host === 'piyushgujral.github.io' ||
+      host.endsWith('.github.io') ||
+      host.endsWith('.pages.dev') ||
+      host.endsWith('.workers.dev') ||
+      host === 'localhost' ||
+      host === '127.0.0.1'
+    ) return origin;
+  } catch (_) {}
+  return '';
+}
+
 function corsHeaders(origin) {
-  return {
-    'Access-Control-Allow-Origin': origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN,
+  const allowed = allowedOrigin(origin);
+  const headers = {
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin'
   };
+  if (allowed) headers['Access-Control-Allow-Origin'] = allowed;
+  return headers;
 }
 
 function json(data, status = 200, origin = '') {
@@ -73,6 +92,10 @@ export class RemoteRegistry {
     const path = url.pathname.replace(/^\/api\/remote\/session\/?/, '');
     const parts = path ? path.split('/') : [];
     const code = (url.searchParams.get('code') || '').trim().toUpperCase();
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+    }
 
     // POST /api/remote/session
     if (request.method === 'POST' && parts.length === 0) {
