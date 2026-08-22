@@ -56,12 +56,46 @@ function ensureCaptureVideoElements() {
   });
 }
 
+function normalizeRemoteDeviceLabels() {
+  // Keep the remote-device feature platform-neutral. The same pairing flow
+  // works with phones/tablets instead of being hard-coded to iPhone/iPad.
+  const replacements = [
+    ['iPhone Link', 'Remote Device'],
+    ['iPhone Capture Link', 'Remote Device Capture'],
+    ['iPad controls • iPhone captures screen, game audio and microphone', 'One device controls the Studio • another device can capture camera, screen and microphone'],
+    ['Create iPhone Pairing Session', 'Create Remote Pairing Session'],
+    ['WAITING FOR IPHONE…', 'WAITING FOR REMOTE DEVICE…'],
+    ['iPhone Capture Mode', 'Remote Device Capture Mode'],
+    ['Start iPhone Capture', 'Start Remote Capture'],
+    ['WAITING FOR IPHONE', 'WAITING FOR REMOTE DEVICE'],
+    ['CONNECTING TO IPHONE', 'CONNECTING TO REMOTE DEVICE'],
+    ['iPhone Connected', 'Remote Device Connected']
+  ];
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach(textNode => {
+    let value = textNode.nodeValue;
+    replacements.forEach(([from, to]) => { value = value.split(from).join(to); });
+    textNode.nodeValue = value;
+  });
+
+  document.querySelectorAll('[title]').forEach(el => {
+    replacements.forEach(([from, to]) => {
+      el.title = el.title.split(from).join(to);
+    });
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   window.PAYUU_CONFIG = await loadPayuuConfig();
 
   ensureCaptureVideoElements();
 
   window.payuuStudio = new PayuuStudio();
+  normalizeRemoteDeviceLabels();
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
