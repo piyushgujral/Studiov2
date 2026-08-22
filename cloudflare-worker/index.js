@@ -129,6 +129,13 @@ export class RemoteRegistry {
     const session = await this.getSession(sessionId);
     if (!session) return json({ error: 'session not found or expired' }, 404, origin);
 
+    // GET /api/remote/session/:id/info
+    // The session ID is a cryptographically random UUID, so this endpoint lets
+    // a capture link recover its pairing code without requiring manual entry.
+    if (parts.length === 2 && parts[1] === 'info' && request.method === 'GET') {
+      return json({ sessionId: session.id, code: session.code, expiresInSeconds: Math.max(0, Math.ceil((SESSION_TTL_SECONDS * 1000 - (Date.now() - session.createdAt)) / 1000)) }, 200, origin);
+    }
+
     if (!code || code !== session.code) {
       return json({ error: 'invalid pairing code' }, 403, origin);
     }
