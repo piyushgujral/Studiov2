@@ -1,0 +1,12 @@
+{
+  "name": "payuu-remote-signaling",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.33.0"
+  }
+}
