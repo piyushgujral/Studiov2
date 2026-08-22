@@ -1,6 +1,6 @@
 name = "payuu-remote-signaling"
 main = "index.js"
-compatibility_date = "2026-08-23"
+compatibility_date = "2026-08-22"
 
 [[durable_objects.bindings]]
 name = "REMOTE_REGISTRY"
