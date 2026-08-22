@@ -1,0 +1,14 @@
+name = "payuu-remote"
+main = "src/index.js"
+compatibility_date = "2026-08-23"
+
+[[durable_objects.bindings]]
+name = "REMOTE_REGISTRY"
+class_name = "RemoteRegistry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RemoteRegistry"]
+
+[vars]
+ALLOWED_ORIGIN = "https://piyushgujral.github.io"
