@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: payuu-media-relay
+    runtime: docker
+    dockerfilePath: ./payuu-media-server/Dockerfile
+    dockerContext: ./payuu-media-server
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PAYUU_ENV
+        value: production
+      - key: PAYUU_ALLOWED_ORIGINS
+        value: https://piyushgujral.github.io
+      - key: PAYUU_HTTP_PORT
+        value: 8080
+      - key: PAYUU_AUTH_TOKEN
+        sync: false
+      - key: PAYUU_STUN_SERVERS
+        value: stun:stun.l.google.com:19302
