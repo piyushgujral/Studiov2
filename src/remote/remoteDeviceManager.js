@@ -1,5 +1,5 @@
 export class RemoteDeviceManager {
-  constructor({ remoteVideo, apiBase = '' } = {}) {
+  constructor({ remoteVideo, apiBase = 'https://payuu-remote-signaling.piyushgujral04.workers.dev' } = {}) {
     this.remoteVideo = remoteVideo;
     const runtime = window.PAYUU_CONFIG || {};
     this.apiBase = apiBase || runtime.apiBase || window.location.origin;
@@ -145,8 +145,6 @@ export class RemoteDeviceManager {
 
     await this.createPeer();
 
-    // Deterministic media ordering: screen video, camera video, screen audio, microphone audio.
-    // The control side uses the first/second remote video tracks as screen/camera respectively.
     screen?.getVideoTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
     cameraMic?.getVideoTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
     screen?.getAudioTracks().forEach(track => this.pc.addTransceiver(track, { direction: 'sendonly' }));
@@ -203,8 +201,6 @@ export class RemoteDeviceManager {
 
   handleRemoteTrack(track) {
     if (track.kind === 'audio') {
-      // Audio is kept with the remote screen stream so the existing audio path can
-      // consume it as one remote program-audio source.
       this.remoteScreenStream.addTrack(track);
       this.publishRemoteStreams();
       return;
