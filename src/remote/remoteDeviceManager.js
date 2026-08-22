@@ -10,10 +10,14 @@ export class RemoteDeviceManager {
     this.sessionId = q.get('session') || '';
     this.code = (q.get('code') || '').toUpperCase();
     this.pc = null; this.localStream = null; this.remoteStream = null;
+    this.remoteScreenStream = new MediaStream();
+    this.remoteCameraStream = new MediaStream();
+    this.remoteVideoCount = 0;
     this.pollTimer = null; this.running = false;
-    this.onStatus = null; this.onRemoteStream = null; this.onError = null; this.onCode = null;
+    this.onStatus = null; this.onRemoteStream = null; this.onRemoteCamera = null; this.onError = null; this.onCode = null;
     this.onPairingExpired = null;
   }
+
   loadIceServers() {
     try {
       const raw = localStorage.getItem('payuu_ice_servers');
@@ -37,47 +41,118 @@ export class RemoteDeviceManager {
     const r = await fetch(`${this.apiBase}/api/remote/session`, { method:'POST', headers: this.getHeaders() });
     if (!r.ok) throw new Error(`Could not create pairing session (${r.status}).`);
     const d = await r.json(); this.role='control'; this.sessionId=d.sessionId; this.code=d.code;
-    this.onCode?.(d); this.setStatus('WAITING_FOR_IPHONE'); this.pollOffer(); return d;
+    this.onCode?.(d); this.setStatus('WAITING_FOR_REMOTE_DEVICE'); this.pollOffer(); return d;
   }
+
   async joinCaptureSession(code=this.code, sessionId=this.sessionId) {
     this.role='capture'; this.code=String(code||'').trim().toUpperCase();
-    if (!this.code) throw new Error('Enter the 6-character pairing code from the iPad.');
+    if (!this.code) throw new Error('Enter the 6-character pairing code from the control device.');
     if (!sessionId) {
       const r=await fetch(`${this.apiBase}/api/remote/session?code=${encodeURIComponent(this.code)}`, { headers: this.getHeaders() });
       if(!r.ok) throw new Error('Pairing code not found or expired.');
       this.sessionId=(await r.json()).sessionId;
     }
-    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Camera/microphone capture is not available in this browser.');
-    let screen=null, mic=null;
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Camera and microphone capture are not available in this browser.');
+
+    let screen=null, cameraMic=null;
     if(navigator.mediaDevices.getDisplayMedia){
       try { screen=await navigator.mediaDevices.getDisplayMedia({video:{cursor:'always'},audio:true}); }
       catch(e){ if(!['AbortError','NotAllowedError'].includes(e?.name)) console.warn('[Payuu Remote] screen',e); }
     }
-    try { mic=await navigator.mediaDevices.getUserMedia({audio:true,video:false}); } catch(e){ console.warn('[Payuu Remote] mic',e); }
+
+    try {
+      cameraMic=await navigator.mediaDevices.getUserMedia({
+        video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'},
+        audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+      });
+    } catch(e) {
+      console.warn('[Payuu Remote] camera+mic',e);
+      try { cameraMic=await navigator.mediaDevices.getUserMedia({audio:true,video:false}); } catch(micErr) { console.warn('[Payuu Remote] mic',micErr); }
+    }
+
     const combined=new MediaStream();
-    screen?.getTracks().forEach(t=>combined.addTrack(t)); mic?.getAudioTracks().forEach(t=>combined.addTrack(t));
-    if(!combined.getTracks().length) throw new Error('No capture tracks were granted. Allow Screen Recording and/or Microphone access.');
+    screen?.getVideoTracks().forEach(t=>combined.addTrack(t));
+    cameraMic?.getVideoTracks().forEach(t=>combined.addTrack(t));
+    screen?.getAudioTracks().forEach(t=>combined.addTrack(t));
+    cameraMic?.getAudioTracks().forEach(t=>combined.addTrack(t));
+    if(!combined.getTracks().length) throw new Error('No capture tracks were granted. Allow camera, microphone and/or screen access.');
+
     this.localStream=combined;
-    [...(screen?.getTracks()||[]),...(mic?.getTracks()||[])].forEach(t=>t.addEventListener('ended',()=>this.setStatus('CAPTURE_TRACK_ENDED')));
+    [...(screen?.getTracks()||[]),...(cameraMic?.getTracks()||[])].forEach(t=>t.addEventListener('ended',()=>this.setStatus('CAPTURE_TRACK_ENDED')));
     await this.createPeer();
-    combined.getTracks().forEach(t=>this.pc.addTransceiver(t,{direction:'sendonly',streams:[combined]}));
+
+    // Add video tracks in a deterministic order: screen first, camera second.
+    // The receiving side uses the same order to keep screen and camera independent.
+    screen?.getVideoTracks().forEach(t=>this.pc.addTransceiver(t,{direction:'sendonly'}));
+    cameraMic?.getVideoTracks().forEach(t=>this.pc.addTransceiver(t,{direction:'sendonly'}));
+    screen?.getAudioTracks().forEach(t=>this.pc.addTransceiver(t,{direction:'sendonly'}));
+    cameraMic?.getAudioTracks().forEach(t=>this.pc.addTransceiver(t,{direction:'sendonly'}));
+
     await this.pc.setLocalDescription(await this.pc.createOffer()); await this.waitForIce();
     const r=await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/offer?code=${encodeURIComponent(this.code)}`,{method:'POST',headers:this.getHeaders({'Content-Type':'application/json'}),body:JSON.stringify({sdp:this.pc.localDescription.sdp})});
-    if(!r.ok) throw new Error(`Could not send iPhone offer (${r.status}).`);
-    this.setStatus('WAITING_FOR_IPAD'); this.pollAnswer();
-    return {sessionId:this.sessionId,code:this.code,hasScreen:!!screen,hasAudio:combined.getAudioTracks().length>0};
+    if(!r.ok) throw new Error(`Could not send remote-device offer (${r.status}).`);
+    this.setStatus('WAITING_FOR_CONTROL_DEVICE'); this.pollAnswer();
+    return {sessionId:this.sessionId,code:this.code,hasScreen:!!screen,hasCamera:!!cameraMic?.getVideoTracks().length,hasAudio:combined.getAudioTracks().length>0};
   }
+
   async createPeer(){
     this.stopPeer(false);
+    this.remoteScreenStream=new MediaStream();
+    this.remoteCameraStream=new MediaStream();
+    this.remoteVideoCount=0;
     this.pc=new RTCPeerConnection({iceServers:this.iceServers,bundlePolicy:'max-bundle',rtcpMuxPolicy:'require'});
     this.pc.onconnectionstatechange=()=>{this.setStatus(`WEBRTC_${String(this.pc?.connectionState||'closed').toUpperCase()}`); if(['failed','closed'].includes(this.pc?.connectionState)) this.cleanupPoll();};
     this.pc.oniceconnectionstatechange=()=>this.setStatus(`ICE_${String(this.pc?.iceConnectionState||'closed').toUpperCase()}`);
-    this.pc.ontrack=e=>{
-      if(!this.remoteStream) this.remoteStream=new MediaStream();
-      if(!this.remoteStream.getTracks().some(t=>t.id===e.track.id)) this.remoteStream.addTrack(e.track);
-      this.remoteVideo.srcObject=this.remoteStream; this.remoteVideo.play().catch(()=>{}); this.onRemoteStream?.(this.remoteStream);
-    };
+    this.pc.ontrack=e=>this.handleRemoteTrack(e.track);
   }
+
+  handleRemoteTrack(track) {
+    if (track.kind === 'audio') {
+      this.remoteScreenStream.addTrack(track);
+      this.publishRemoteStreams();
+      return;
+    }
+
+    this.remoteVideoCount += 1;
+    const target = this.remoteVideoCount === 1 ? this.remoteScreenStream : this.remoteCameraStream;
+    target.addTrack(track);
+    this.publishRemoteStreams();
+  }
+
+  publishRemoteStreams() {
+    const screenVideo = document.getElementById('rawScreenVideo');
+    const cameraVideo = document.getElementById('rawCameraVideo');
+    const screen = this.remoteScreenStream;
+    const camera = this.remoteCameraStream;
+
+    if (screenVideo && screen.getVideoTracks().length) {
+      screenVideo.srcObject = screen;
+      screenVideo.play().catch(()=>{});
+    }
+    if (cameraVideo && camera.getVideoTracks().length) {
+      cameraVideo.srcObject = camera;
+      cameraVideo.play().catch(()=>{});
+      const studio = window.payuuStudio;
+      if (studio?.compositor) {
+        studio.compositor.isCameraActive = true;
+        studio.compositor.isScreenActive = studio.compositor.isScreenActive || screen.getVideoTracks().length > 0;
+        studio.cameraBtnText && (studio.cameraBtnText.textContent = 'Remote Camera');
+        studio.screenBtnText && (studio.screenBtnText.textContent = 'Remote Device Connected');
+        studio.btnToggleCamera?.classList.add('bg-indigo-900');
+        studio.btnToggleCamera?.classList.remove('bg-gray-800');
+        studio.sourceCardCamera?.classList.remove('hidden');
+        studio.updatePlaceholderVisibility?.();
+      }
+      this.onRemoteCamera?.(camera);
+    }
+
+    const combined = new MediaStream([...screen.getVideoTracks(), ...screen.getAudioTracks()]);
+    if (combined.getTracks().length) {
+      if (this.remoteVideo) { this.remoteVideo.srcObject = combined; this.remoteVideo.play().catch(()=>{}); }
+      this.onRemoteStream?.(combined);
+    }
+  }
+
   async pollOffer(){
     this.cleanupPoll(); this.running=true;
     const loop=async()=>{ if(!this.running)return; try{
@@ -86,10 +161,11 @@ export class RemoteDeviceManager {
         await this.createPeer(); await this.pc.setRemoteDescription({type:'offer',sdp:d.sdp});
         await this.pc.setLocalDescription(await this.pc.createAnswer()); await this.waitForIce();
         const a=await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/answer?code=${encodeURIComponent(this.code)}`,{method:'POST',headers:this.getHeaders({'Content-Type':'application/json'}),body:JSON.stringify({sdp:this.pc.localDescription.sdp})});
-        if(!a.ok) throw new Error(`Could not send iPad answer (${a.status}).`); this.setStatus('ANSWER_SENT'); return;
+        if(!a.ok) throw new Error(`Could not send control-device answer (${a.status}).`); this.setStatus('ANSWER_SENT'); return;
       }}
     }catch(e){this.onError?.(e);} this.pollTimer=setTimeout(loop,1000);}; loop();
   }
+
   async pollAnswer(){
     this.cleanupPoll(); this.running=true;
     const loop=async()=>{ if(!this.running)return; try{
@@ -97,12 +173,13 @@ export class RemoteDeviceManager {
       if(r.ok){const d=await r.json(); if(d.sdp){await this.pc.setRemoteDescription({type:'answer',sdp:d.sdp}); this.setStatus('ANSWER_RECEIVED'); return;}}
     }catch(e){this.onError?.(e);} this.pollTimer=setTimeout(loop,1000);}; loop();
   }
+
   async waitForIce(){
     if(!this.pc||this.pc.iceGatheringState==='complete')return;
     await new Promise(resolve=>{let done=false; const finish=()=>{if(done)return; if(this.pc?.iceGatheringState==='complete'||Date.now()-start>5000){done=true;this.pc?.removeEventListener('icegatheringstatechange',finish);resolve();}}; const start=Date.now(); this.pc.addEventListener('icegatheringstatechange',finish); setTimeout(finish,5100);});
   }
   cleanupPoll(){this.running=false;if(this.pollTimer)clearTimeout(this.pollTimer);this.pollTimer=null;}
   stopPeer(stopLocal=true){this.cleanupPoll();this.pc?.close();this.pc=null;if(stopLocal&&this.localStream){this.localStream.getTracks().forEach(t=>t.stop());this.localStream=null;}}
-  async close(){try{if(this.sessionId&&this.code)await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}?code=${encodeURIComponent(this.code)}`,{method:'DELETE',headers:this.getHeaders()});}catch(_){}this.stopPeer(true);this.remoteStream?.getTracks().forEach(t=>t.stop());this.remoteStream=null;this.sessionId='';this.code='';this.setStatus('DISCONNECTED');}
+  async close(){try{if(this.sessionId&&this.code)await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}?code=${encodeURIComponent(this.code)}`,{method:'DELETE',headers:this.getHeaders()});}catch(_){}this.stopPeer(true);this.remoteStream?.getTracks().forEach(t=>t.stop());this.remoteStream=null;this.remoteScreenStream?.getTracks().forEach(t=>t.stop());this.remoteCameraStream?.getTracks().forEach(t=>t.stop());this.remoteScreenStream=new MediaStream();this.remoteCameraStream=new MediaStream();this.sessionId='';this.code='';this.setStatus('DISCONNECTED');}
   setStatus(s){this.onStatus?.(s);}
 }
