@@ -52,7 +52,6 @@ class CaptureService : Service() {
         private const val API_BASE = "https://payuu-remote-signaling.piyushgujral04.workers.dev"
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
-
     private val client = OkHttpClient()
     private val handler = Handler(Looper.getMainLooper())
     private var pcFactory: PeerConnectionFactory? = null
@@ -76,14 +75,8 @@ class CaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Payuu Capture")
-            .setContentText("Capturing screen, camera and microphone")
-            .setSmallIcon(android.R.drawable.presence_video_online)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        else startForeground(NOTIFICATION_ID, notification)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Payuu Capture").setContentText("Capturing screen, camera and microphone").setSmallIcon(android.R.drawable.presence_video_online).setOngoing(true).build()
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION) else startForeground(NOTIFICATION_ID, notification)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -91,14 +84,13 @@ class CaptureService : Service() {
         sessionId = intent?.getStringExtra(EXTRA_SESSION).orEmpty()
         code = intent?.getStringExtra(EXTRA_CODE).orEmpty().uppercase()
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val projectionData = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
-        else @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_PROJECTION_DATA)
+        val projectionData = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java) else @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_PROJECTION_DATA)
         if (sessionId.isBlank() || code.isBlank() || resultCode < 0 || projectionData == null) { stopSelf(); return START_NOT_STICKY }
-        startCapture(resultCode, projectionData)
+        startCapture(projectionData)
         return START_STICKY
     }
 
-    private fun startCapture(resultCode: Int, projectionData: Intent) {
+    private fun startCapture(projectionData: Intent) {
         try {
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(applicationContext).setEnableInternalTracer(false).createInitializationOptions())
             eglBase = EglBase.create()
@@ -111,18 +103,12 @@ class CaptureService : Service() {
             createMicrophoneTrack()
             createMetadataChannel()
             createOffer()
-        } catch (t: Throwable) {
-            updateNotification("Capture failed: ${t.message ?: "unknown error"}")
-            stopCapture()
-        }
+        } catch (t: Throwable) { updateNotification("Capture failed: ${t.message ?: "unknown error"}"); stopCapture() }
     }
 
     private fun createPeer() {
         val iceServers = listOf(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())
-        val config = PeerConnection.RTCConfiguration(iceServers).apply {
-            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
-            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-        }
+        val config = PeerConnection.RTCConfiguration(iceServers).apply { bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE; rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE }
         peer = pcFactory!!.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = Unit
@@ -132,36 +118,15 @@ class CaptureService : Service() {
             override fun onIceCandidatesRemoved(candidates: Array<out org.webrtc.IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
-            override fun onDataChannel(channel: DataChannel) = handleCommandChannel(channel)
+            override fun onDataChannel(channel: DataChannel) = Unit
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) = Unit
             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) { updateNotification("WebRTC: ${newState.name}") }
         })
     }
 
-    private fun handleCommandChannel(channel: DataChannel) {
-        if (channel.label() != "payuu-media-meta") return
-        channel.registerObserver(object : DataChannel.Observer {
-            override fun onBufferedAmountChange(previousAmount: Long) = Unit
-            override fun onStateChange() = Unit
-            override fun onMessage(buffer: DataChannel.Buffer) {
-                try {
-                    val bytes = ByteArray(buffer.data.remaining())
-                    buffer.data.get(bytes)
-                    val command = JSONObject(String(bytes, Charsets.UTF_8))
-                    if (command.optString("type") != "payuu-capture-command") return
-                    if (command.optString("command") == "set-microphone") {
-                        val enabled = command.optBoolean("enabled", true)
-                        micTrack?.setEnabled(enabled)
-                        updateNotification(if (enabled) "Microphone ON • screen + camera connected" else "Microphone OFF • screen + camera connected")
-                    }
-                } catch (t: Throwable) { updateNotification("Remote command error: ${t.message ?: "invalid command"}") }
-            }
-        })
-    }
-
     private fun createScreenTrack(projectionData: Intent) {
-        screenSource = pcFactory!!.createVideoSource(false)
+        screenSource = pcFactory!!.createVideoSource(true)
         screenSurfaceHelper = SurfaceTextureHelper.create("PayuuScreenCapture", eglBase!!.eglBaseContext)
         screenCapturer = ScreenCapturerAndroid(projectionData, object : MediaProjection.Callback() { override fun onStop() { updateNotification("Android screen capture stopped") } })
         screenCapturer!!.initialize(screenSurfaceHelper, this, screenSource!!.capturerObserver)
@@ -211,7 +176,18 @@ class CaptureService : Service() {
         dataChannel?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() { if (dataChannel?.state() == DataChannel.State.OPEN) sendMetadata() }
-            override fun onMessage(buffer: DataChannel.Buffer) { /* remote commands arrive on the same channel */ }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                try {
+                    val bytes = ByteArray(buffer.data.remaining())
+                    buffer.data.get(bytes)
+                    val command = JSONObject(String(bytes, Charsets.UTF_8))
+                    if (command.optString("type") == "payuu-capture-command" && command.optString("command") == "set-microphone") {
+                        val enabled = command.optBoolean("enabled", true)
+                        micTrack?.setEnabled(enabled)
+                        updateNotification(if (enabled) "Microphone ON • screen + camera connected" else "Microphone OFF • screen + camera connected")
+                    }
+                } catch (_) {}
+            }
         })
     }
 
@@ -251,8 +227,7 @@ class CaptureService : Service() {
         val started = System.currentTimeMillis()
         val check = object : Runnable {
             override fun run() {
-                if (peer?.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE || System.currentTimeMillis() - started > 5000) postOffer(desc.description)
-                else handler.postDelayed(this, 100)
+                if (peer?.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE || System.currentTimeMillis() - started > 5000) postOffer(desc.description) else handler.postDelayed(this, 100)
             }
         }
         handler.post(check)
