@@ -21,15 +21,13 @@ import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
-import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
-import org.webrtc.RtpTransceiver
+import org.webrtc.RtpReceiver
 import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
-import org.webrtc.VideoCapturer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.AudioSource
@@ -125,7 +123,7 @@ class CaptureService : Service() {
                 .createPeerConnectionFactory()
 
             createPeer()
-            createScreenTrack(resultCode, projectionData)
+            createScreenTrack(projectionData)
             createCameraTrack()
             createMicrophoneTrack()
             createMetadataChannel()
@@ -153,14 +151,14 @@ class CaptureService : Service() {
             override fun onRemoveStream(stream: MediaStream) = Unit
             override fun onDataChannel(channel: DataChannel) = Unit
             override fun onRenegotiationNeeded() = Unit
-            override fun onAddTrack(receiver: RtpTransceiver, mediaStreams: Array<out MediaStream>) = Unit
+            override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) = Unit
             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
                 updateNotification("WebRTC: ${newState.name}")
             }
         })
     }
 
-    private fun createScreenTrack(resultCode: Int, projectionData: Intent) {
+    private fun createScreenTrack(projectionData: Intent) {
         screenSource = pcFactory!!.createVideoSource(false)
         screenSurfaceHelper = SurfaceTextureHelper.create("PayuuScreenCapture", eglBase!!.eglBaseContext)
         screenCapturer = ScreenCapturerAndroid(projectionData, object : MediaProjection.Callback() {
@@ -238,7 +236,6 @@ class CaptureService : Service() {
     }
 
     private fun createOffer() {
-        val constraints = MediaConstraints()
         peer!!.createOffer(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription) {
                 peer!!.setLocalDescription(object : SdpObserver {
@@ -251,7 +248,7 @@ class CaptureService : Service() {
             override fun onSetSuccess() = Unit
             override fun onCreateFailure(error: String) = fail(error)
             override fun onSetFailure(error: String) = fail(error)
-        }, constraints)
+        }, MediaConstraints())
     }
 
     private fun waitForIceAndSend(desc: SessionDescription) {
@@ -259,9 +256,8 @@ class CaptureService : Service() {
         val check = object : Runnable {
             override fun run() {
                 val complete = peer?.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE
-                if (complete || System.currentTimeMillis() - started > 5000) {
-                    postOffer(desc.description)
-                } else handler.postDelayed(this, 100)
+                if (complete || System.currentTimeMillis() - started > 5000) postOffer(desc.description)
+                else handler.postDelayed(this, 100)
             }
         }
         handler.post(check)
@@ -277,8 +273,9 @@ class CaptureService : Service() {
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) = fail(e.message ?: "Signaling request failed")
             override fun onResponse(call: Call, response: Response) {
+                val success = response.isSuccessful
                 response.close()
-                if (!response.isSuccessful) fail("Offer rejected (${response.code})") else {
+                if (!success) fail("Offer rejected") else {
                     updateNotification("Android screen + camera + mic connected")
                     pollAnswer()
                 }
@@ -299,8 +296,9 @@ class CaptureService : Service() {
                     override fun onFailure(call: Call, e: IOException) { handler.postDelayed(poll, 1000) }
                     override fun onResponse(call: Call, response: Response) {
                         val text = response.body?.string().orEmpty()
+                        val success = response.isSuccessful
                         response.close()
-                        if (response.isSuccessful) {
+                        if (success) {
                             try {
                                 val sdp = JSONObject(text).optString("sdp")
                                 if (sdp.isNotBlank()) {
@@ -323,9 +321,7 @@ class CaptureService : Service() {
         handler.post(poll)
     }
 
-    private fun fail(message: String) {
-        updateNotification("Payuu Capture: $message")
-    }
+    private fun fail(message: String) = updateNotification("Payuu Capture: $message")
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
