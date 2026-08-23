@@ -13,6 +13,7 @@ import { DestinationManager } from './streaming/destinationManager.js';
 import { QualitySettingsManager } from './streaming/qualitySettings.js';
 import { StreamingEngine } from './streaming/streamingEngine.js';
 import { RemoteDeviceManager } from './remote/remoteDeviceManager.js';
+import { setupRemoteDeviceEnhancements } from './remote/remoteDeviceEnhancements.js';
 
 export class PayuuStudio {
   constructor() {
@@ -39,6 +40,11 @@ export class PayuuStudio {
     );
 
     this.remoteDeviceManager = new RemoteDeviceManager({ remoteVideo: this.remoteDeviceVideo });
+
+    // Install remote-media routing before any remote session is started.
+    // This prevents a single camera track from ever being promoted into the
+    // fullscreen screen layer.
+    setupRemoteDeviceEnhancements(this);
 
     this.streamingEngine = new StreamingEngine(
       this.destinationManager,
@@ -288,6 +294,8 @@ export class PayuuStudio {
     };
 
     this.remoteDeviceManager.onRemoteStream = (stream) => {
+      // Remote screen is the only stream that should enter the fullscreen
+      // screen-capture pipeline. Camera is attached separately as PIP.
       this.screenCapture.attachRemoteStream(stream);
       const card = document.getElementById('sourceCardRemote');
       if (card) card.classList.remove('hidden');
@@ -295,6 +303,19 @@ export class PayuuStudio {
       if (screenBtnText) screenBtnText.textContent = 'iPhone Connected';
       const sourceStatus = document.getElementById('remoteSourceStatus');
       if (sourceStatus) sourceStatus.textContent = stream.getAudioTracks().length ? 'SCREEN + AUDIO' : 'SCREEN';
+    };
+
+    this.remoteDeviceManager.onRemoteCamera = (stream) => {
+      // Keep remote camera strictly in the camera/PIP layer.
+      this.compositor.isCameraActive = !!stream?.getVideoTracks?.().length;
+      this.compositor.cameraTransform.visible = true;
+      this.compositor.cameraVideo.srcObject = stream;
+      this.compositor.cameraVideo.muted = true;
+      this.compositor.cameraVideo.autoplay = true;
+      this.compositor.cameraVideo.playsInline = true;
+      this.compositor.cameraVideo.play().catch(() => {});
+      this.sourceCardCamera?.classList.toggle('hidden', !this.compositor.isCameraActive);
+      this.updatePlaceholderVisibility();
     };
 
     this.remoteDeviceManager.onError = (err) => {
@@ -359,7 +380,7 @@ export class PayuuStudio {
       (scene.sources.showScreen && this.screenCapture.isActive) ||
       scene.sources.showText;
 
-    this.noSourceOverlay.classList.toggle('hidden', hasActiveSource);
+    this.noSourceOverlay.classList.toggle('hidden', !hasActiveSource);
   }
 
   setupDestinationsUI() {
@@ -559,402 +580,8 @@ export class PayuuStudio {
       }
       if (diagIceState) diagIceState.textContent = info.iceState;
       if (diagPeerState) diagPeerState.textContent = info.peerState;
-      if (diagVideoTrack) diagVideoTrack.textContent = info.videoTrackActive ? 'YES (Clean 1080p)' : 'NO';
-      if (diagAudioTrack) diagAudioTrack.textContent = info.audioTrackActive ? 'YES (Opus)' : 'NO (Mic inactive)';
-      if (diagStreamState) diagStreamState.textContent = info.status;
+      if (diagVideoTrack) diagVideoTrack.textContent = info.videoTrack;
+      if (diagAudioTrack) diagAudioTrack.textContent = info.audioTrack;
+      if (diagStreamState) diagStreamState.textContent = info.streamState;
     };
   }
-
-  setupSettingsModal() {
-    const btnOpenSettings = document.getElementById('btnOpenSettings');
-    const btnCloseSettings = document.getElementById('btnCloseSettings');
-    const settingsModal = document.getElementById('settingsModal');
-
-    if (btnOpenSettings && settingsModal) {
-      btnOpenSettings.addEventListener('click', () => {
-        settingsModal.classList.remove('hidden');
-      });
-    }
-
-    if (btnCloseSettings && settingsModal) {
-      btnCloseSettings.addEventListener('click', () => {
-        settingsModal.classList.add('hidden');
-      });
-    }
-
-    // WHIP Endpoint Settings bindings
-    const inputWhipEndpoint = document.getElementById('settingWhipEndpoint');
-    const inputWhipToken = document.getElementById('settingWhipToken');
-
-    if (inputWhipEndpoint && inputWhipToken) {
-      inputWhipEndpoint.value = localStorage.getItem('payuu_whip_endpoint') || '';
-      inputWhipToken.value = localStorage.getItem('payuu_whip_token') || '';
-
-      const saveWhip = () => {
-        this.streamingEngine.setWHIPEndpoint(inputWhipEndpoint.value, inputWhipToken.value);
-      };
-
-      inputWhipEndpoint.addEventListener('change', saveWhip);
-      inputWhipToken.addEventListener('change', saveWhip);
-    }
-
-    const inputIceServers = document.getElementById('settingIceServers');
-    if (inputIceServers) {
-      inputIceServers.value = localStorage.getItem('payuu_ice_servers') || JSON.stringify([{ urls: 'stun:stun.l.google.com:19302' }], null, 2);
-      inputIceServers.addEventListener('change', () => {
-        try {
-          const parsed = JSON.parse(inputIceServers.value);
-          if (!Array.isArray(parsed) || !parsed.length) throw new Error('ICE server list must be a non-empty JSON array.');
-          parsed.forEach(item => { if (!item || !item.urls) throw new Error('Each ICE server needs a urls property.'); });
-          localStorage.setItem('payuu_ice_servers', JSON.stringify(parsed));
-          this.whipClient.setIceServers(parsed);
-          this.remoteDeviceManager.setIceServers(parsed);
-          this.showToast('ICE/TURN configuration saved.', 'info', 3000);
-        } catch (err) { this.showToast(`Invalid ICE server JSON: ${err.message}`, 'error', 5000); }
-      });
-    }
-
-    // Quality Preset bindings
-    const selResolution = document.getElementById('settingResolution');
-    const selFps = document.getElementById('settingFps');
-    const inputVideoBitrate = document.getElementById('settingVideoBitrate');
-    const inputAudioBitrate = document.getElementById('settingAudioBitrate');
-
-    if (selResolution && selFps && inputVideoBitrate && inputAudioBitrate) {
-      selResolution.value = this.qualitySettings.settings.resolution;
-      selFps.value = this.qualitySettings.settings.fps;
-      inputVideoBitrate.value = this.qualitySettings.settings.videoBitrate;
-      inputAudioBitrate.value = this.qualitySettings.settings.audioBitrate;
-
-      const saveQuality = () => {
-        this.qualitySettings.saveSettings({
-          resolution: selResolution.value,
-          fps: Number(selFps.value),
-          videoBitrate: Number(inputVideoBitrate.value),
-          audioBitrate: Number(inputAudioBitrate.value)
-        });
-      };
-
-      selResolution.addEventListener('change', saveQuality);
-      selFps.addEventListener('change', saveQuality);
-      inputVideoBitrate.addEventListener('change', saveQuality);
-      inputAudioBitrate.addEventListener('change', saveQuality);
-    }
-  }
-
-  setupSceneUI() {
-    const sceneList = document.getElementById('sceneList');
-
-    const renderScenes = () => {
-      sceneList.innerHTML = '';
-      this.sceneManager.scenes.forEach((scene) => {
-        const isActive = scene.id === this.sceneManager.activeSceneId;
-        const item = document.createElement('div');
-        item.className = `px-3 py-2 rounded text-xs font-medium flex justify-between items-center cursor-pointer transition ${
-          isActive
-            ? 'bg-indigo-950/60 border border-indigo-500/40 text-white'
-            : 'hover:bg-gray-800/50 border border-transparent text-gray-400'
-        }`;
-        item.innerHTML = `
-          <span class="flex items-center space-x-2">
-            <i class="fa-solid ${scene.icon} ${isActive ? 'text-indigo-400' : 'text-gray-500'}"></i>
-            <span>${scene.name}</span>
-          </span>
-          ${isActive ? '<span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-900 text-indigo-200">Active</span>' : ''}
-        `;
-        item.addEventListener('click', () => {
-          this.sceneManager.setActiveScene(scene.id);
-        });
-        sceneList.appendChild(item);
-      });
-    };
-
-    this.sceneManager.onSceneChange = (scene) => {
-      this.compositor.activeScene = scene;
-      renderScenes();
-      this.updatePlaceholderVisibility();
-    };
-
-    renderScenes();
-  }
-
-  setupOverlayUI() {
-    const overlayList = document.getElementById('overlayList');
-    const modal = document.getElementById('overlayStudioModal');
-    const templateGrid = document.getElementById('overlayTemplateGrid');
-    const editor = document.getElementById('overlayEditor');
-    const empty = document.getElementById('overlayEditorEmpty');
-    const activeCard = document.getElementById('activeOverlayCard');
-    let category = 'all';
-
-    const renderOverlays = () => {
-      overlayList.innerHTML = '';
-      this.overlayManager.overlays.forEach((overlay) => {
-        const isActive = overlay.id === this.overlayManager.activeOverlayId;
-        const item = document.createElement('div');
-        item.className = `px-2.5 py-2 rounded-lg text-xs flex items-center gap-2 cursor-pointer transition ${isActive ? 'bg-indigo-950/70 border border-indigo-500/40 text-white' : 'hover:bg-gray-800/50 border border-transparent text-gray-400'}`;
-        item.innerHTML = `<span class="w-6 h-6 rounded bg-gray-900 border border-gray-700 flex items-center justify-center"><i class="fa-solid ${overlay.icon || 'fa-layer-group'} text-[10px]" style="color:${overlay.accent || '#818cf8'}"></i></span><span class="truncate flex-1">${overlay.name}</span><i class="fa-solid ${isActive ? 'fa-eye text-indigo-400' : 'fa-eye-slash text-gray-600'} text-[10px]"></i>`;
-        item.addEventListener('click', () => this.overlayManager.setActiveOverlay(overlay.id));
-        overlayList.appendChild(item);
-      });
-      renderEditor();
-      renderActiveCard();
-    };
-
-    const renderTemplates = () => {
-      templateGrid.innerHTML = '';
-      this.overlayManager.getTemplates().filter(t => category === 'all' || t.category === category).forEach(t => {
-        const b=document.createElement('button');
-        b.className='w-full text-left p-2.5 rounded-xl bg-gray-900/70 hover:bg-gray-800 border border-gray-800 hover:border-indigo-500/40 transition';
-        b.innerHTML=`<div class="flex items-center gap-2"><span class="w-8 h-8 rounded-lg bg-gray-950 flex items-center justify-center"><i class="fa-solid ${t.icon}" style="color:${t.accent}"></i></span><div class="min-w-0"><div class="text-xs font-semibold text-white truncate">${t.name}</div><div class="text-[9px] text-gray-500">${t.category}</div></div></div><div class="text-[9px] text-gray-500 mt-2 leading-snug">${t.description}</div>`;
-        b.addEventListener('click',()=>this.overlayManager.addTemplate(t.id));
-        templateGrid.appendChild(b);
-      });
-    };
-
-    const renderEditor = () => {
-      const o=this.overlayManager.getActiveOverlay();
-      if(!o){ empty.classList.remove('hidden'); empty.classList.add('flex'); editor.innerHTML=''; return; }
-      empty.classList.add('hidden'); empty.classList.remove('flex');
-      editor.innerHTML='';
-      o.elements.forEach((el,i)=>{
-        const card=document.createElement('div'); card.className='p-3 rounded-xl bg-[#11161d] border border-[#30363d]';
-        const type=el.type;
-        let controls='';
-        if(type==='text' || type==='badge' || type==='ticker') controls=`<label class="block text-[10px] text-gray-500 mb-1">Text</label><input data-field="content" value="${String(el.content||'').replace(/"/g,'&quot;')}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white mb-2"><div class="grid grid-cols-2 gap-2"><div><label class="text-[10px] text-gray-500">Font size</label><input data-field="fontSize" type="number" value="${el.fontSize||18}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div><div><label class="text-[10px] text-gray-500">Color</label><input data-field="color" type="color" value="${/^#/.test(el.color||'')?el.color:'#ffffff'}" class="w-full h-8 bg-black/40 border border-gray-700 rounded"></div></div>`;
-        if(type==='badge') controls+=`<div class="grid grid-cols-2 gap-2 mt-2"><div><label class="text-[10px] text-gray-500">Background</label><input data-field="bgColor" type="color" value="${/^#/.test(el.bgColor||'')?el.bgColor:'#6366f1'}" class="w-full h-8 bg-black/40 border border-gray-700 rounded"></div><div><label class="text-[10px] text-gray-500">Width</label><input data-field="width" type="number" value="${el.width||120}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div></div>`;
-        if(type==='bar' || type==='frame') controls=`<div class="grid grid-cols-2 gap-2"><div><label class="text-[10px] text-gray-500">X</label><input data-field="x" type="number" value="${el.x||0}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div><div><label class="text-[10px] text-gray-500">Y</label><input data-field="y" type="number" value="${el.y||0}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div><div><label class="text-[10px] text-gray-500">Width</label><input data-field="width" type="number" value="${el.width||500}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div><div><label class="text-[10px] text-gray-500">Height</label><input data-field="height" type="number" value="${el.height||80}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div></div><div class="mt-2"><label class="text-[10px] text-gray-500">Color</label><input data-field="color" type="color" value="${/^#/.test(el.color||'')?el.color:'#6366f1'}" class="w-full h-8 bg-black/40 border border-gray-700 rounded"></div>`;
-        if(type==='image') controls=`<label class="block text-[10px] text-gray-500 mb-1">Image URL</label><input data-field="src" value="${String(el.src||'').replace(/"/g,'&quot;')}" class="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white mb-2"><div class="grid grid-cols-2 gap-2"><input data-field="width" type="number" value="${el.width||400}" class="bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"><input data-field="height" type="number" value="${el.height||200}" class="bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"></div>`;
-        card.innerHTML=`<div class="flex justify-between items-center mb-2"><div class="text-[10px] uppercase tracking-wider text-indigo-300 font-bold"><i class="fa-solid ${type==='text'?'fa-font':type==='image'?'fa-image':type==='frame'?'fa-border-all':'fa-layer-group'} mr-1"></i>${type} source</div><span class="text-[9px] text-gray-600">Layer ${i+1}</span></div>${controls}`;
-        card.querySelectorAll('[data-field]').forEach(input=>input.addEventListener('change',()=>{ let v=input.value; if(['x','y','width','height','fontSize'].includes(input.dataset.field)) v=Number(v); this.overlayManager.updateElement(i,{[input.dataset.field]:v}); }));
-        editor.appendChild(card);
-      });
-    };
-
-    const renderActiveCard=()=>{
-      const o=this.overlayManager.getActiveOverlay();
-      if(!o){activeCard.innerHTML='<div class="text-xs text-gray-500">No active overlay.</div>';return;}
-      activeCard.innerHTML=`<div class="p-3 rounded-xl bg-indigo-950/20 border border-indigo-500/30"><div class="text-[9px] uppercase tracking-widest text-indigo-300">Active</div><input id="activeOverlayName" value="${o.name.replace(/"/g,'&quot;')}" class="mt-2 w-full bg-black/40 border border-gray-700 rounded px-2 py-2 text-sm text-white"><p class="text-[10px] text-gray-500 mt-2">${o.description||'Reusable overlay composition'}</p></div><div class="p-3 rounded-xl bg-gray-900/60 border border-gray-800"><div class="flex justify-between text-[10px] text-gray-500 mb-2"><span>LAYERS</span><span>${o.elements.length}</span></div><div class="space-y-1">${o.elements.map((e,i)=>`<div class="flex items-center gap-2 px-2 py-1.5 rounded bg-black/30 text-[10px]"><i class="fa-solid ${e.type==='text'?'fa-font':e.type==='image'?'fa-image':'fa-layer-group'} text-gray-500"></i><span class="flex-1 truncate">${e.content||e.type}</span><span class="text-gray-600">${i+1}</span></div>`).join('')}</div></div>`;
-      activeCard.querySelector('#activeOverlayName')?.addEventListener('change',e=>this.overlayManager.renameActive(e.target.value));
-    };
-
-    this.overlayManager.onOverlayChange=()=>{ this.compositor.activeOverlay=this.overlayManager.getActiveOverlay(); renderOverlays(); };
-    this.overlayManager.onLibraryChange=()=>{ renderOverlays(); };
-    renderTemplates(); renderOverlays();
-
-    document.getElementById('btnOpenOverlayStudio')?.addEventListener('click',()=>modal.classList.remove('hidden'));
-    document.getElementById('btnCloseOverlayStudio')?.addEventListener('click',()=>modal.classList.add('hidden'));
-    document.getElementById('btnCreateTextOverlay')?.addEventListener('click',()=>this.overlayManager.createTextOverlay('NEW TEXT'));
-    document.getElementById('btnDuplicateOverlay')?.addEventListener('click',()=>this.overlayManager.duplicateActive());
-    document.getElementById('btnDeleteOverlay')?.addEventListener('click',()=>this.overlayManager.deleteActive());
-    document.getElementById('btnExportOverlay')?.addEventListener('click',()=>{ const data=this.overlayManager.exportActive(); if(!data)return; const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([data],{type:'application/json'})); a.download='payuu-overlay.json'; a.click(); URL.revokeObjectURL(a.href); });
-    document.getElementById('overlayImportFile')?.addEventListener('change',async e=>{ const f=e.target.files?.[0]; if(!f)return; try{this.overlayManager.importOverlay(await f.text());}catch(err){this.showToast(err.message,'error',5000);} e.target.value=''; });
-    document.querySelectorAll('.overlay-filter').forEach(btn=>btn.addEventListener('click',()=>{category=btn.dataset.cat;document.querySelectorAll('.overlay-filter').forEach(b=>b.className='overlay-filter px-2 py-1 text-[10px] rounded bg-gray-800 text-gray-400');btn.className='overlay-filter px-2 py-1 text-[10px] rounded bg-indigo-600 text-white';renderTemplates();}));
-  }
-
-  setupChatUI() {
-    const chatFeed = document.getElementById('chatFeed');
-    const chatTabs = document.getElementById('chatTabs');
-    const chatForm = document.getElementById('chatForm');
-    const chatInput = document.getElementById('chatInput');
-
-    const renderMessages = (messages) => {
-      chatFeed.innerHTML = '';
-      messages.forEach((msg) => {
-        const msgEl = document.createElement('div');
-        msgEl.className = 'flex items-start space-x-2';
-
-        let badgeBg = 'bg-gray-800 text-gray-300';
-        let badgeLabel = 'MSG';
-
-        if (msg.platform === 'youtube') {
-          badgeBg = 'bg-red-950 text-red-400 border border-red-900/50';
-          badgeLabel = 'YT';
-        } else if (msg.platform === 'kick') {
-          badgeBg = 'bg-emerald-950 text-emerald-400 border border-emerald-900/50';
-          badgeLabel = 'KICK';
-        } else if (msg.platform === 'twitch') {
-          badgeBg = 'bg-purple-950 text-purple-400 border border-purple-900/50';
-          badgeLabel = 'TW';
-        } else if (msg.platform === 'superchat') {
-          badgeBg = 'bg-amber-950 text-amber-400 border border-amber-900/50';
-          badgeLabel = '★ SC';
-        }
-
-        msgEl.innerHTML = `
-          <span class="px-1.5 py-0.5 rounded text-[9px] font-bold ${badgeBg}">${badgeLabel}</span>
-          <div class="leading-tight">
-            <span class="font-semibold text-gray-300">${msg.username}:</span>
-            <span class="text-gray-400 ml-1">${msg.message}</span>
-          </div>
-        `;
-        chatFeed.appendChild(msgEl);
-      });
-      chatFeed.scrollTop = chatFeed.scrollHeight;
-    };
-
-    chatTabs.querySelectorAll('.chat-tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        chatTabs.querySelectorAll('.chat-tab-btn').forEach((b) => {
-          b.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
-          b.classList.add('text-gray-400');
-        });
-        btn.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
-        btn.classList.remove('text-gray-400');
-
-        const filter = btn.getAttribute('data-filter');
-        this.chatManager.setFilter(filter);
-        renderMessages(this.chatManager.getFilteredMessages());
-      });
-    });
-
-    chatForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const val = chatInput.value.trim();
-      if (!val) return;
-      this.chatManager.addMessage({
-        platform: 'youtube',
-        username: 'You (Creator)',
-        message: val
-      });
-      chatInput.value = '';
-    });
-
-    this.chatManager.onMessageAdded = (filtered) => {
-      renderMessages(filtered);
-    };
-
-    renderMessages(this.chatManager.getFilteredMessages());
-  }
-
-  setupSuperChatUI() {
-    const btnTriggerAlert = document.getElementById('btnTriggerAlert');
-    const scSupporterName = document.getElementById('scSupporterName');
-    const scAmount = document.getElementById('scAmount');
-    const scMessage = document.getElementById('scMessage');
-
-    const latest = this.superChatManager.getLatestEvent();
-    scSupporterName.textContent = latest.supporterName;
-    scAmount.textContent = `${latest.currency}${latest.amount}`;
-    scMessage.textContent = latest.message;
-
-    btnTriggerAlert.addEventListener('click', () => {
-      this.superChatManager.triggerAlert(this.superChatManager.getLatestEvent(), 5000);
-    });
-
-    this.superChatManager.onAlertChange = (alert) => {
-      this.compositor.activeAlert = alert;
-    };
-  }
-
-  setupAudioUI() {
-    const btnToggleMic = document.getElementById('btnToggleMicMeter');
-    const micMeterBar = document.getElementById('micMeterBar');
-    const micDbLevel = document.getElementById('micDbLevel');
-    const diagMicStatus = document.getElementById('diagMicStatus');
-
-    btnToggleMic.addEventListener('click', async () => {
-      if (!this.audioPipeline.isActive) {
-        try {
-          await this.audioPipeline.startMicMeter();
-          btnToggleMic.textContent = 'Disable Mic Meter';
-          btnToggleMic.classList.replace('text-indigo-400', 'text-red-400');
-          if (diagMicStatus) {
-            diagMicStatus.textContent = 'ACTIVE (METERING)';
-            diagMicStatus.className = 'text-emerald-400 font-mono font-bold';
-          }
-        } catch (err) {
-          this.showToast(err.message, 'error');
-        }
-      } else {
-        this.audioPipeline.stop();
-        btnToggleMic.textContent = 'Enable Mic Meter';
-        btnToggleMic.classList.replace('text-red-400', 'text-indigo-400');
-        if (diagMicStatus) {
-          diagMicStatus.textContent = 'INACTIVE';
-          diagMicStatus.className = 'text-gray-400 font-mono';
-        }
-      }
-    });
-
-    this.audioPipeline.onLevelUpdate = (level) => {
-      micMeterBar.style.width = `${level}%`;
-      micDbLevel.textContent = level > 0 ? `-${Math.round((100 - level) * 0.4)} dB` : '-∞ dB';
-    };
-  }
-
-  setupResponsiveTabs() {
-    const tabToggleLeft = document.getElementById('tabToggleLeft');
-    const tabToggleCenter = document.getElementById('tabToggleCenter');
-    const tabToggleRight = document.getElementById('tabToggleRight');
-    const leftPanel = document.getElementById('leftPanel');
-    const centerPanel = document.getElementById('centerPanel');
-    const rightPanel = document.getElementById('rightPanel');
-
-    const setTab = (panel) => {
-      if (window.innerWidth >= 1024) return;
-
-      leftPanel.classList.toggle('hidden', panel !== 'left');
-      centerPanel.classList.toggle('hidden', panel !== 'center');
-      rightPanel.classList.toggle('hidden', panel !== 'right');
-
-      tabToggleLeft.classList.toggle('bg-indigo-600', panel === 'left');
-      tabToggleCenter.classList.toggle('bg-indigo-600', panel === 'center');
-      tabToggleRight.classList.toggle('bg-indigo-600', panel === 'right');
-    };
-
-    tabToggleLeft.addEventListener('click', () => setTab('left'));
-    tabToggleCenter.addEventListener('click', () => setTab('center'));
-    tabToggleRight.addEventListener('click', () => setTab('right'));
-  }
-
-  setupDevStatusModal() {
-    const btnDevStatus = document.getElementById('btnDevStatus');
-    const btnCloseDevModal = document.getElementById('btnCloseDevModal');
-    const devStatusModal = document.getElementById('devStatusModal');
-
-    btnDevStatus.addEventListener('click', () => {
-      devStatusModal.classList.remove('hidden');
-    });
-
-    btnCloseDevModal.addEventListener('click', () => {
-      devStatusModal.classList.add('hidden');
-    });
-
-    devStatusModal.addEventListener('click', (e) => {
-      if (e.target === devStatusModal) devStatusModal.classList.add('hidden');
-    });
-  }
-
-  showToast(msg, type = 'info', duration = 5000, actionCallback = null) {
-    if (this.toastTimeout) clearTimeout(this.toastTimeout);
-
-    this.toastMessage.textContent = msg;
-    const toastIcon = document.getElementById('toastIcon');
-
-    if (type === 'error') {
-      this.toastNotification.className =
-        'fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-red-950/95 border border-red-500/50 text-red-200 text-xs rounded-md shadow-2xl backdrop-blur flex items-center space-x-3 max-w-lg';
-      toastIcon.className = 'fa-solid fa-triangle-exclamation text-red-400 text-base';
-    } else {
-      this.toastNotification.className =
-        'fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-indigo-950/95 border border-indigo-500/50 text-indigo-200 text-xs rounded-md shadow-2xl backdrop-blur flex items-center space-x-3 max-w-lg';
-      toastIcon.className = 'fa-solid fa-circle-info text-indigo-400 text-base';
-    }
-
-    if (actionCallback) {
-      this.toastAction.classList.remove('hidden');
-      this.toastAction.onclick = () => {
-        this.toastNotification.classList.add('hidden');
-        actionCallback();
-      };
-    } else {
-      this.toastAction.classList.add('hidden');
-    }
-
-    this.toastNotification.classList.remove('hidden');
-    this.toastTimeout = setTimeout(() => {
-      this.toastNotification.classList.add('hidden');
-    }, duration);
-  }
-}
