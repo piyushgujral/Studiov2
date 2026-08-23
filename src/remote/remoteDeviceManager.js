@@ -19,6 +19,7 @@ export class RemoteDeviceManager {
     this.remoteStreamTypes = new Map();
     this.remoteTrackTypes = new Map();
     this.captureDataChannel = null;
+    this.controlDataChannel = null;
     this.pollTimer = null;
     this.running = false;
     this.onStatus = null;
@@ -75,44 +76,30 @@ export class RemoteDeviceManager {
     return d;
   }
 
-  /**
-   * Ask for display capture before doing any network work.
-   * Android Chrome and some other browsers require getDisplayMedia() to be
-   * called while the Start button's user activation is still alive. The old
-   * flow resolved the pairing session first, which could consume that
-   * activation and silently prevent the screen picker from appearing.
-   */
   async requestScreenCapture() {
     if (!navigator.mediaDevices?.getDisplayMedia) {
       this.setStatus('SCREEN_UNAVAILABLE');
       return null;
     }
-
     try {
       this.setStatus('REQUESTING_SCREEN_CAPTURE');
       let screen;
       try {
-        screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 60 } }, audio: true });
       } catch (audioError) {
-        // Android/browser combinations may support display video but not
-        // display audio. A video-only retry should still provide screen share.
         if (audioError?.name === 'NotAllowedError' || audioError?.name === 'AbortError') throw audioError;
-        console.warn('[Payuu Remote] display+audio capture failed; retrying video-only:', audioError?.name, audioError?.message || audioError);
-        screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 60 } }, audio: false });
       }
-
       if (!screen?.getVideoTracks().length) {
         screen?.getTracks().forEach(track => track.stop());
         this.setStatus('SCREEN_UNAVAILABLE');
         return null;
       }
-
       const screenTrack = screen.getVideoTracks()[0];
       screenTrack.addEventListener('ended', () => this.setStatus('SCREEN_CAPTURE_ENDED'), { once: true });
       this.setStatus(`SCREEN_READY${screen.getAudioTracks().length ? '_WITH_AUDIO' : ''}`);
       return screen;
     } catch (e) {
-      console.warn('[Payuu Remote] screen capture unavailable:', e?.name, e?.message || e);
       this.setStatus(`SCREEN_UNAVAILABLE_${String(e?.name || 'ERROR').toUpperCase()}`);
       return null;
     }
@@ -123,18 +110,12 @@ export class RemoteDeviceManager {
     this.sessionId = sessionId || this.sessionId;
     this.code = String(code || '').trim().toUpperCase();
 
-    // IMPORTANT: getDisplayMedia must happen first, while this method was
-    // entered from the user's Start button. Do not move this below fetch().
     const screen = await this.requestScreenCapture();
-
-    // The generated URL normally contains only the session ID. Resolve the
-    // pairing code after the display picker has completed.
     if (!this.code && this.sessionId) await this.resolveCaptureSession();
     if (!this.code) {
       screen?.getTracks().forEach(track => track.stop());
       throw new Error('Pairing code could not be retrieved.');
     }
-
     if (!this.sessionId) {
       const r = await fetch(`${this.apiBase}/api/remote/session?code=${encodeURIComponent(this.code)}`, { headers: this.getHeaders(), cache: 'no-store' });
       if (!r.ok) {
@@ -143,7 +124,6 @@ export class RemoteDeviceManager {
       }
       this.sessionId = (await r.json()).sessionId;
     }
-
     if (!navigator.mediaDevices?.getUserMedia) {
       screen?.getTracks().forEach(track => track.stop());
       throw new Error('Camera and microphone capture are not available in this browser.');
@@ -156,33 +136,23 @@ export class RemoteDeviceManager {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
     } catch (e) {
-      console.warn('[Payuu Remote] camera + microphone request failed:', e);
       try {
-        cameraMic = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false
-        });
-      } catch (micErr) {
-        console.warn('[Payuu Remote] microphone fallback failed:', micErr);
-      }
+        cameraMic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      } catch (_) {}
     }
-
     if (!screen && !cameraMic) throw new Error('No camera, microphone or screen permission was granted.');
 
     this.localStream = new MediaStream();
     [...(screen?.getTracks() || []), ...(cameraMic?.getTracks() || [])].forEach(track => this.localStream.addTrack(track));
-    [...(screen?.getTracks() || []), ...(cameraMic?.getTracks() || [])].forEach(track => {
-      track.addEventListener('ended', () => this.setStatus('CAPTURE_TRACK_ENDED'), { once: true });
-    });
+    this.__captureScreenStream = screen;
+    this.__captureCameraMicStream = cameraMic;
 
     await this.createPeer();
 
-    // Preserve source identity. Track IDs are included as well as stream IDs
-    // because some browsers can deliver RTCTrackEvent.streams as an empty list.
     const meta = {
       type: 'payuu-media-meta',
-      screenStreamId: screen?.id || '',
-      cameraStreamId: cameraMic?.id || '',
+      screenStreamId: 'payuu-screen',
+      cameraStreamId: 'payuu-camera',
       screenTrackIds: screen ? screen.getTracks().map(track => track.id) : [],
       cameraTrackIds: cameraMic ? cameraMic.getTracks().map(track => track.id) : [],
       hasScreen: !!screen?.getVideoTracks().length,
@@ -193,25 +163,21 @@ export class RemoteDeviceManager {
     };
 
     this.captureDataChannel = this.pc.createDataChannel('payuu-media-meta', { ordered: true });
-    const sendMeta = () => {
-      if (this.captureDataChannel?.readyState === 'open') this.captureDataChannel.send(JSON.stringify(meta));
-    };
-    this.captureDataChannel.onopen = sendMeta;
+    this.captureDataChannel.onopen = () => this.sendCaptureMetadata(meta);
+    this.captureDataChannel.onmessage = event => this.handleCaptureCommand(event.data);
 
+    // Add screen first and camera second so the fallback receiver ordering is deterministic.
     screen?.getTracks().forEach(track => this.pc.addTrack(track, screen));
     cameraMic?.getTracks().forEach(track => this.pc.addTrack(track, cameraMic));
 
     await this.pc.setLocalDescription(await this.pc.createOffer());
     await this.waitForIce();
-    sendMeta();
+    this.sendCaptureMetadata(meta);
 
     const r = await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/offer?code=${encodeURIComponent(this.code)}`, {
-      method: 'POST',
-      headers: this.getHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ sdp: this.pc.localDescription.sdp })
+      method: 'POST', headers: this.getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ sdp: this.pc.localDescription.sdp })
     });
     if (!r.ok) throw new Error(`Could not send remote-device offer (${r.status}).`);
-
     this.setStatus('WAITING_FOR_CONTROL_DEVICE');
     this.pollAnswer();
     return {
@@ -221,6 +187,22 @@ export class RemoteDeviceManager {
       hasCamera: !!cameraMic?.getVideoTracks().length,
       hasAudio: !!cameraMic?.getAudioTracks().length || !!screen?.getAudioTracks().length
     };
+  }
+
+  sendCaptureMetadata(meta) {
+    if (this.captureDataChannel?.readyState === 'open') this.captureDataChannel.send(JSON.stringify(meta));
+  }
+
+  handleCaptureCommand(raw) {
+    try {
+      const command = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (command?.type !== 'payuu-capture-command') return;
+      if (command.command === 'set-microphone') {
+        const enabled = !!command.enabled;
+        this.__captureCameraMicStream?.getAudioTracks().forEach(track => { track.enabled = enabled; });
+        this.setStatus(enabled ? 'MICROPHONE_ON' : 'MICROPHONE_OFF');
+      }
+    } catch (_) {}
   }
 
   getCapturePlatform() {
@@ -252,6 +234,7 @@ export class RemoteDeviceManager {
     this.pc.ontrack = event => this.handleRemoteTrack(event);
     this.pc.ondatachannel = event => {
       if (event.channel.label !== 'payuu-media-meta') return;
+      this.controlDataChannel = event.channel;
       event.channel.onmessage = e => {
         try {
           const data = JSON.parse(e.data);
@@ -288,7 +271,6 @@ export class RemoteDeviceManager {
       fallback.set(videoIds[0], 'screen');
       fallback.set(videoIds[1], 'camera');
     }
-
     for (const event of this.remoteTrackEvents) {
       const track = event.track;
       const streamId = event.streams?.[0]?.id || '';
@@ -296,7 +278,7 @@ export class RemoteDeviceManager {
         this.remoteAudioStream.addTrack(track);
         continue;
       }
-      const type = this.remoteTrackTypes.get(track.id) || this.remoteStreamTypes.get(streamId) || fallback.get(streamId) || 'camera';
+      const type = this.remoteTrackTypes.get(track.id) || this.remoteStreamTypes.get(streamId) || fallback.get(streamId) || (videoEvents.indexOf(event) === 0 ? 'screen' : 'camera');
       if (type === 'screen') this.remoteScreenStream.addTrack(track);
       else this.remoteCameraStream.addTrack(track);
     }
@@ -310,16 +292,9 @@ export class RemoteDeviceManager {
     video.autoplay = true;
     video.playsInline = true;
     video.setAttribute('playsinline', '');
-
     const play = async () => {
-      try {
-        await video.play();
-        console.log(`[Payuu Remote] ${label} video ready`, video.videoWidth, video.videoHeight, video.readyState);
-      } catch (e) {
-        console.warn(`[Payuu Remote] ${label} video play pending:`, e?.name, e?.message || e);
-      }
+      try { await video.play(); } catch (e) { console.warn(`[Payuu Remote] ${label} video play pending:`, e); }
     };
-
     if (video.readyState >= 2) await play();
     else video.addEventListener('loadeddata', play, { once: true });
     return true;
@@ -342,11 +317,7 @@ export class RemoteDeviceManager {
       remoteAudio.style.opacity = '0';
       document.body.appendChild(remoteAudio);
     }
-
-    if (screenVideo && this.remoteScreenStream.getVideoTracks().length) {
-      this.attachVideo(screenVideo, this.remoteScreenStream, 'remote screen');
-    }
-
+    if (screenVideo && this.remoteScreenStream.getVideoTracks().length) this.attachVideo(screenVideo, this.remoteScreenStream, 'remote screen');
     if (cameraVideo && this.remoteCameraStream.getVideoTracks().length) {
       this.attachVideo(cameraVideo, this.remoteCameraStream, 'remote camera');
       const studio = window.payuuStudio;
@@ -360,7 +331,6 @@ export class RemoteDeviceManager {
       }
       this.onRemoteCamera?.(this.remoteCameraStream);
     }
-
     if (this.remoteAudioStream.getAudioTracks().length) {
       remoteAudio.srcObject = this.remoteAudioStream;
       remoteAudio.muted = false;
@@ -370,17 +340,26 @@ export class RemoteDeviceManager {
       studio?.audioPipeline?.getAudioTrack(this.remoteAudioStream);
       this.onRemoteAudio?.(this.remoteAudioStream);
     }
-
     if (this.remoteScreenStream.getVideoTracks().length) {
-      const remoteProgramStream = new MediaStream([
-        ...this.remoteScreenStream.getVideoTracks(),
-        ...this.remoteAudioStream.getAudioTracks()
-      ]);
-      if (this.remoteVideo) {
-        this.attachVideo(this.remoteVideo, remoteProgramStream, 'remote program');
-      }
+      const remoteProgramStream = new MediaStream([...this.remoteScreenStream.getVideoTracks(), ...this.remoteAudioStream.getAudioTracks()]);
+      if (this.remoteVideo) this.attachVideo(this.remoteVideo, remoteProgramStream, 'remote program');
       this.onRemoteStream?.(remoteProgramStream);
     }
+  }
+
+  setRemoteMicrophoneEnabled(enabled) {
+    const value = !!enabled;
+    this.__remoteMicEnabled = value;
+    this.remoteAudioStream?.getAudioTracks?.().forEach(track => { track.enabled = value; });
+    if (this.controlDataChannel?.readyState === 'open') {
+      this.controlDataChannel.send(JSON.stringify({ type: 'payuu-capture-command', command: 'set-microphone', enabled: value }));
+    }
+    return value;
+  }
+
+  isRemoteMicrophoneEnabled() {
+    const tracks = this.remoteAudioStream?.getAudioTracks?.() || [];
+    return tracks.length ? tracks.some(track => track.enabled) : this.__remoteMicEnabled !== false;
   }
 
   async pollOffer() {
@@ -398,18 +377,14 @@ export class RemoteDeviceManager {
             await this.pc.setLocalDescription(await this.pc.createAnswer());
             await this.waitForIce();
             const a = await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}/answer?code=${encodeURIComponent(this.code)}`, {
-              method: 'POST',
-              headers: this.getHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({ sdp: this.pc.localDescription.sdp })
+              method: 'POST', headers: this.getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ sdp: this.pc.localDescription.sdp })
             });
             if (!a.ok) throw new Error(`Could not send control-device answer (${a.status}).`);
             this.setStatus('ANSWER_SENT');
             return;
           }
         }
-      } catch (e) {
-        this.onError?.(e);
-      }
+      } catch (e) { this.onError?.(e); }
       this.pollTimer = setTimeout(loop, 1000);
     };
     loop();
@@ -430,9 +405,7 @@ export class RemoteDeviceManager {
             return;
           }
         }
-      } catch (e) {
-        this.onError?.(e);
-      }
+      } catch (e) { this.onError?.(e); }
       this.pollTimer = setTimeout(loop, 1000);
     };
     loop();
@@ -474,9 +447,7 @@ export class RemoteDeviceManager {
 
   async close() {
     try {
-      if (this.sessionId && this.code) {
-        await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}?code=${encodeURIComponent(this.code)}`, { method: 'DELETE', headers: this.getHeaders() });
-      }
+      if (this.sessionId && this.code) await fetch(`${this.apiBase}/api/remote/session/${encodeURIComponent(this.sessionId)}?code=${encodeURIComponent(this.code)}`, { method: 'DELETE', headers: this.getHeaders() });
     } catch (_) {}
     this.stopPeer(true);
     this.remoteStream?.getTracks().forEach(track => track.stop());
@@ -490,12 +461,11 @@ export class RemoteDeviceManager {
     this.remoteTrackEvents = [];
     this.remoteStreamTypes.clear();
     this.remoteTrackTypes.clear();
+    this.controlDataChannel = null;
     this.sessionId = '';
     this.code = '';
     this.setStatus('DISCONNECTED');
   }
 
-  setStatus(status) {
-    this.onStatus?.(status);
-  }
+  setStatus(status) { this.onStatus?.(status); }
 }
