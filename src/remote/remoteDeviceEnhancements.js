@@ -20,16 +20,23 @@ export function setupRemoteDeviceEnhancements(studio) {
       const streamId = event.streams?.[0]?.id || '';
       const explicit = this.remoteTrackTypes?.get(track.id) || this.remoteStreamTypes?.get(streamId);
       if (explicit) return explicit;
+
       const label = String(track.label || '').toLowerCase();
       if (label.includes('screen') || label.includes('display') || label.includes('projection')) return 'screen';
       if (label.includes('camera') || label.includes('front') || label.includes('back')) return 'camera';
+
+      // CRITICAL: if only one remote video track exists, it is the camera.
+      // Never promote a lone camera track into the Studio screen layer.
+      // A screen track is classified as screen only when explicit metadata,
+      // a screen-like track label, or a second video track establishes it.
       if (videos.length >= 2) return index === 0 ? 'screen' : 'camera';
-      return 'screen';
+      return 'camera';
     };
 
     this.remoteScreenStream = new MediaStream();
     this.remoteCameraStream = new MediaStream();
     this.remoteAudioStream = new MediaStream();
+
     let videoIndex = 0;
     for (const event of events) {
       const track = event?.track;
