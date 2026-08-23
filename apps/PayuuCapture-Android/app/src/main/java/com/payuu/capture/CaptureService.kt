@@ -82,11 +82,8 @@ class CaptureService : Service() {
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        else startForeground(NOTIFICATION_ID, notification)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -94,34 +91,20 @@ class CaptureService : Service() {
         sessionId = intent?.getStringExtra(EXTRA_SESSION).orEmpty()
         code = intent?.getStringExtra(EXTRA_CODE).orEmpty().uppercase()
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val projectionData = if (Build.VERSION.SDK_INT >= 33) {
-            intent?.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_PROJECTION_DATA)
-        }
-        if (sessionId.isBlank() || code.isBlank() || resultCode < 0 || projectionData == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        val projectionData = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
+        else @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_PROJECTION_DATA)
+        if (sessionId.isBlank() || code.isBlank() || resultCode < 0 || projectionData == null) { stopSelf(); return START_NOT_STICKY }
         startCapture(resultCode, projectionData)
         return START_STICKY
     }
 
     private fun startCapture(resultCode: Int, projectionData: Intent) {
         try {
-            PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(applicationContext)
-                    .setEnableInternalTracer(false)
-                    .createInitializationOptions()
-            )
+            PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(applicationContext).setEnableInternalTracer(false).createInitializationOptions())
             eglBase = EglBase.create()
             val encoderFactory = DefaultVideoEncoderFactory(eglBase!!.eglBaseContext, true, true)
             val decoderFactory = DefaultVideoDecoderFactory(eglBase!!.eglBaseContext)
-            pcFactory = PeerConnectionFactory.builder()
-                .setVideoEncoderFactory(encoderFactory)
-                .setVideoDecoderFactory(decoderFactory)
-                .createPeerConnectionFactory()
-
+            pcFactory = PeerConnectionFactory.builder().setVideoEncoderFactory(encoderFactory).setVideoDecoderFactory(decoderFactory).createPeerConnectionFactory()
             createPeer()
             createScreenTrack(projectionData)
             createCameraTrack()
@@ -149,11 +132,30 @@ class CaptureService : Service() {
             override fun onIceCandidatesRemoved(candidates: Array<out org.webrtc.IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
-            override fun onDataChannel(channel: DataChannel) = Unit
+            override fun onDataChannel(channel: DataChannel) = handleCommandChannel(channel)
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) = Unit
-            override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
-                updateNotification("WebRTC: ${newState.name}")
+            override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) { updateNotification("WebRTC: ${newState.name}") }
+        })
+    }
+
+    private fun handleCommandChannel(channel: DataChannel) {
+        if (channel.label() != "payuu-media-meta") return
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) = Unit
+            override fun onStateChange() = Unit
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                try {
+                    val bytes = ByteArray(buffer.data.remaining())
+                    buffer.data.get(bytes)
+                    val command = JSONObject(String(bytes, Charsets.UTF_8))
+                    if (command.optString("type") != "payuu-capture-command") return
+                    if (command.optString("command") == "set-microphone") {
+                        val enabled = command.optBoolean("enabled", true)
+                        micTrack?.setEnabled(enabled)
+                        updateNotification(if (enabled) "Microphone ON • screen + camera connected" else "Microphone OFF • screen + camera connected")
+                    }
+                } catch (t: Throwable) { updateNotification("Remote command error: ${t.message ?: "invalid command"}") }
             }
         })
     }
@@ -161,11 +163,7 @@ class CaptureService : Service() {
     private fun createScreenTrack(projectionData: Intent) {
         screenSource = pcFactory!!.createVideoSource(false)
         screenSurfaceHelper = SurfaceTextureHelper.create("PayuuScreenCapture", eglBase!!.eglBaseContext)
-        screenCapturer = ScreenCapturerAndroid(projectionData, object : MediaProjection.Callback() {
-            override fun onStop() {
-                updateNotification("Android screen capture stopped")
-            }
-        })
+        screenCapturer = ScreenCapturerAndroid(projectionData, object : MediaProjection.Callback() { override fun onStop() { updateNotification("Android screen capture stopped") } })
         screenCapturer!!.initialize(screenSurfaceHelper, this, screenSource!!.capturerObserver)
         screenCapturer!!.startCapture(1280, 720, 30)
         screenTrack = pcFactory!!.createVideoTrack("payuu-screen-track", screenSource)
@@ -212,10 +210,8 @@ class CaptureService : Service() {
         dataChannel = peer!!.createDataChannel("payuu-media-meta", DataChannel.Init())
         dataChannel?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
-            override fun onStateChange() {
-                if (dataChannel?.state() == DataChannel.State.OPEN) sendMetadata()
-            }
-            override fun onMessage(buffer: DataChannel.Buffer) = Unit
+            override fun onStateChange() { if (dataChannel?.state() == DataChannel.State.OPEN) sendMetadata() }
+            override fun onMessage(buffer: DataChannel.Buffer) { /* remote commands arrive on the same channel */ }
         })
     }
 
@@ -255,8 +251,7 @@ class CaptureService : Service() {
         val started = System.currentTimeMillis()
         val check = object : Runnable {
             override fun run() {
-                val complete = peer?.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE
-                if (complete || System.currentTimeMillis() - started > 5000) postOffer(desc.description)
+                if (peer?.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE || System.currentTimeMillis() - started > 5000) postOffer(desc.description)
                 else handler.postDelayed(this, 100)
             }
         }
@@ -266,19 +261,13 @@ class CaptureService : Service() {
     private fun postOffer(sdp: String) {
         updateNotification("Sending Android screen offer…")
         val body = JSONObject().put("sdp", sdp).toString().toRequestBody(JSON)
-        val request = Request.Builder()
-            .url("$API_BASE/api/remote/session/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/offer?code=${java.net.URLEncoder.encode(code, "UTF-8")}")
-            .post(body)
-            .build()
+        val request = Request.Builder().url("$API_BASE/api/remote/session/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/offer?code=${java.net.URLEncoder.encode(code, "UTF-8")}").post(body).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) = fail(e.message ?: "Signaling request failed")
             override fun onResponse(call: Call, response: Response) {
                 val success = response.isSuccessful
                 response.close()
-                if (!success) fail("Offer rejected") else {
-                    updateNotification("Android screen + camera + mic connected")
-                    pollAnswer()
-                }
+                if (!success) fail("Offer rejected") else { updateNotification("Android screen + camera + mic connected"); pollAnswer() }
             }
         })
     }
@@ -289,9 +278,7 @@ class CaptureService : Service() {
         val poll = object : Runnable {
             override fun run() {
                 if (!answerPolling) return
-                val request = Request.Builder()
-                    .url("$API_BASE/api/remote/session/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/answer?code=${java.net.URLEncoder.encode(code, "UTF-8")}")
-                    .get().build()
+                val request = Request.Builder().url("$API_BASE/api/remote/session/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/answer?code=${java.net.URLEncoder.encode(code, "UTF-8")}").get().build()
                 client.newCall(request).enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) { handler.postDelayed(poll, 1000) }
                     override fun onResponse(call: Call, response: Response) {
@@ -325,12 +312,7 @@ class CaptureService : Service() {
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Payuu Capture")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.presence_video_online)
-            .setOngoing(true)
-            .build()
+        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Payuu Capture").setContentText(text).setSmallIcon(android.R.drawable.presence_video_online).setOngoing(true).build()
         manager.notify(NOTIFICATION_ID, notification)
     }
 
@@ -365,10 +347,6 @@ class CaptureService : Service() {
         stopSelf()
     }
 
-    override fun onDestroy() {
-        stopCapture()
-        super.onDestroy()
-    }
-
+    override fun onDestroy() { stopCapture(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 }
