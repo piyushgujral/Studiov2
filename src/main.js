@@ -1,5 +1,4 @@
 import { PayuuStudio } from './studio.js';
-import { setupRemoteDeviceEnhancements } from './remote/remoteDeviceEnhancements.js';
 import { installRemoteDeviceFix } from './remote/remoteDeviceFix.js';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
@@ -77,11 +76,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.PAYUU_CONFIG = await loadPayuuConfig();
   ensureCaptureVideoElements();
   window.payuuStudio = new PayuuStudio();
-  // The compatibility layer is installed after the manager is constructed and
-  // before any capture session can be started.
+
+  // Install the final WebRTC routing layer AFTER PayuuStudio construction.
+  // Do not install the legacy enhancements afterwards: they replace the fixed
+  // createPeer/rebuild/publish methods and can route screen into the camera.
   installRemoteDeviceFix(window.payuuStudio);
   normalizeRemoteDeviceLabels();
-  setupRemoteDeviceEnhancements(window.payuuStudio);
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
