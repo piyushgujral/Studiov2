@@ -9,6 +9,21 @@ export function setupRemoteDeviceEnhancements(studio) {
   if (!manager || manager.__payuuEnhanced) return;
   manager.__payuuEnhanced = true;
 
+  // Capture-side fix: reserve two separate video transceivers before the
+  // capture manager adds the display and camera tracks. This prevents a
+  // browser from negotiating only one video m-line and silently dropping the
+  // display track while the camera continues to work.
+  const originalCreatePeer = manager.createPeer.bind(manager);
+  manager.createPeer = async function enhancedCreatePeer() {
+    await originalCreatePeer();
+    if (this.role !== 'capture' || !this.pc) return;
+    const videoTransceivers = this.pc.getTransceivers().filter(t => t.receiver?.track?.kind === 'video');
+    while (videoTransceivers.length < 2) {
+      videoTransceivers.push(this.pc.addTransceiver('video', { direction: 'sendonly' }));
+    }
+    this.__payuuCaptureVideoTransceivers = videoTransceivers.slice(0, 2);
+  };
+
   const originalRebuild = manager.rebuildRemoteStreams.bind(manager);
   manager.__payuuOriginalRebuild = originalRebuild;
 
@@ -25,10 +40,6 @@ export function setupRemoteDeviceEnhancements(studio) {
       if (label.includes('screen') || label.includes('display') || label.includes('projection')) return 'screen';
       if (label.includes('camera') || label.includes('front') || label.includes('back')) return 'camera';
 
-      // CRITICAL: if only one remote video track exists, it is the camera.
-      // Never promote a lone camera track into the Studio screen layer.
-      // A screen track is classified as screen only when explicit metadata,
-      // a screen-like track label, or a second video track establishes it.
       if (videos.length >= 2) return index === 0 ? 'screen' : 'camera';
       return 'camera';
     };
