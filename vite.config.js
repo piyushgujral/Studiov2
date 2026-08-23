@@ -8,7 +8,9 @@ export default defineConfig({
     host: true
   },
   build: {
-    target: 'esnext',
+    // ES2020 keeps the generated bundle compatible with modern Safari/iOS,
+    // Chrome/Android and Edge/Windows without forcing legacy polyfills.
+    target: 'es2020',
     outDir: 'dist'
   }
 });
