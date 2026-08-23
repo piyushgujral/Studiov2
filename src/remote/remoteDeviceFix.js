@@ -1,12 +1,12 @@
 // Payuu remote capture compatibility layer.
-// Uses the standard WebRTC addTrack(track, stream) path for reliable
-// screen/camera separation across Chrome, Edge, Firefox, Safari, Android,
-// iPhone/iPad and Windows.
+// The important rule is that screen and camera are identified by the
+// negotiated WebRTC transceiver MID, not by MediaStreamTrack IDs. Browsers
+// are allowed to rewrite track IDs across a peer connection.
 
 export function installRemoteDeviceFix(studio) {
   const manager = studio?.remoteDeviceManager;
-  if (!manager || manager.__payuuRemoteFixV2) return;
-  manager.__payuuRemoteFixV2 = true;
+  if (!manager || manager.__payuuRemoteFixV3) return;
+  manager.__payuuRemoteFixV3 = true;
 
   const isIOS = () => {
     const ua = navigator.userAgent || '';
@@ -19,15 +19,13 @@ export function installRemoteDeviceFix(studio) {
       this.setStatus('SCREEN_UNAVAILABLE');
       return null;
     }
-
     try {
       this.setStatus('REQUESTING_SCREEN_CAPTURE');
       const mobile = isIOS() || /Android/i.test(navigator.userAgent || '');
       let screen;
-
       if (mobile) {
-        // iOS/iPadOS/Android are stricter about display-audio constraints.
-        // Microphone is captured separately with getUserMedia().
+        // Mobile browsers are more reliable when display audio is not requested.
+        // Microphone/audio is captured separately below.
         screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       } else {
         try {
@@ -43,26 +41,23 @@ export function installRemoteDeviceFix(studio) {
           });
         }
       }
-
       const video = screen?.getVideoTracks?.()[0];
       if (!video) {
         screen?.getTracks?.().forEach(t => t.stop());
         this.setStatus('SCREEN_UNAVAILABLE');
         return null;
       }
-
       video.addEventListener('ended', () => this.setStatus('SCREEN_CAPTURE_ENDED'), { once: true });
       this.setStatus(`SCREEN_READY${screen.getAudioTracks().length ? '_WITH_AUDIO' : ''}`);
       return screen;
     } catch (e) {
-      const name = String(e?.name || 'ERROR').toUpperCase();
-      this.setStatus(`SCREEN_UNAVAILABLE_${name}`);
+      this.setStatus(`SCREEN_UNAVAILABLE_${String(e?.name || 'ERROR').toUpperCase()}`);
       return null;
     }
   };
 
-  // Use the standard addTrack(stream) path. The old transceiver wrapper could
-  // make the screen/camera m-lines fragile across Safari and Chromium.
+  // Standard addTrack(track, stream) is intentionally used. It preserves the
+  // originating MediaStream and lets the browser negotiate stable m-lines.
   manager.createPeer = async function createPeerFixed() {
     this.stopPeer(false);
     this.remoteScreenStream = new MediaStream();
@@ -71,6 +66,7 @@ export function installRemoteDeviceFix(studio) {
     this.remoteTrackEvents = [];
     this.remoteStreamTypes = new Map();
     this.remoteTrackTypes = new Map();
+    this.remoteMidTypes = new Map();
 
     const configured = Array.isArray(this.iceServers) && this.iceServers.length
       ? this.iceServers
@@ -86,7 +82,7 @@ export function installRemoteDeviceFix(studio) {
       const state = String(this.pc?.connectionState || 'closed').toUpperCase();
       this.setStatus(`WEBRTC_${state}`);
       if (state === 'FAILED') {
-        this.onError?.(new Error('WebRTC connection failed. A reachable STUN/TURN server is required on restrictive networks.'));
+        this.onError?.(new Error('WebRTC connection failed. A TURN relay may be required on restrictive networks.'));
       }
       if (state === 'CLOSED' || state === 'FAILED') this.cleanupPoll();
     };
@@ -112,11 +108,52 @@ export function installRemoteDeviceFix(studio) {
     };
   };
 
+  // Augment the existing metadata sender with negotiated MIDs. This is called
+  // after setLocalDescription() by the capture flow, so the sender transceivers
+  // have their final MIDs available.
+  const originalSendCaptureMetadata = manager.sendCaptureMetadata?.bind(manager);
+  manager.sendCaptureMetadata = function sendCaptureMetadataFixed(meta) {
+    const next = { ...(meta || {}) };
+    const pc = this.pc;
+    if (pc) {
+      const transceivers = pc.getTransceivers?.() || [];
+      const findMid = (trackIds, kind = 'video') => {
+        for (const id of trackIds || []) {
+          const sender = pc.getSenders?.().find(s => s.track?.id === id && s.track?.kind === kind);
+          const t = transceivers.find(x => x.sender === sender);
+          if (t?.mid != null) return t.mid;
+        }
+        return null;
+      };
+      next.screenMid = findMid(next.screenTrackIds, 'video');
+      next.cameraMid = findMid(next.cameraTrackIds, 'video');
+      next.audioMids = transceivers
+        .filter(t => t.sender?.track?.kind === 'audio' && t.mid != null)
+        .map(t => t.mid);
+    }
+    if (originalSendCaptureMetadata) return originalSendCaptureMetadata(next);
+  };
+
+  const originalApplyMetadata = manager.applyRemoteMediaMetadata?.bind(manager);
+  manager.applyRemoteMediaMetadata = function applyRemoteMediaMetadataFixed(meta) {
+    this.remoteMidTypes = this.remoteMidTypes || new Map();
+    if (meta?.screenMid != null) this.remoteMidTypes.set(String(meta.screenMid), 'screen');
+    if (meta?.cameraMid != null) this.remoteMidTypes.set(String(meta.cameraMid), 'camera');
+    (meta?.screenTrackIds || []).forEach(id => this.remoteTrackTypes?.set(id, 'screen'));
+    (meta?.cameraTrackIds || []).forEach(id => this.remoteTrackTypes?.set(id, 'camera'));
+    if (originalApplyMetadata) {
+      // Do not let the old metadata method make the classification decision;
+      // rebuildRemoteStreams below uses the MID map first.
+      try { originalApplyMetadata(meta); } catch (_) { this.rebuildRemoteStreams(); }
+    } else {
+      this.rebuildRemoteStreams();
+    }
+  };
+
   manager.rebuildRemoteStreams = function rebuildRemoteStreamsFixed() {
     const events = Array.isArray(this.remoteTrackEvents) ? this.remoteTrackEvents : [];
     const videos = events.filter(e => e?.track?.kind === 'video');
-    const videoTransceivers = (this.pc?.getTransceivers?.() || [])
-      .filter(t => t?.receiver?.track?.kind === 'video');
+    const transceivers = this.pc?.getTransceivers?.() || [];
 
     this.remoteScreenStream = new MediaStream();
     this.remoteCameraStream = new MediaStream();
@@ -126,23 +163,31 @@ export function installRemoteDeviceFix(studio) {
       const track = event?.track;
       if (!track) return 'camera';
 
-      for (const stream of event.streams || []) {
-        const known = this.remoteStreamTypes?.get(stream.id);
-        if (known) return known;
+      const mid = event?.transceiver?.mid;
+      if (mid != null) {
+        const byMid = this.remoteMidTypes?.get(String(mid));
+        if (byMid) return byMid;
       }
 
-      const knownTrack = this.remoteTrackTypes?.get(track.id);
-      if (knownTrack) return knownTrack;
+      for (const stream of event.streams || []) {
+        const byStream = this.remoteStreamTypes?.get(stream.id);
+        if (byStream) return byStream;
+      }
 
-      const transceiverIndex = videoTransceivers.indexOf(event.transceiver);
-      if (transceiverIndex === 0) return 'screen';
-      if (transceiverIndex === 1) return 'camera';
+      const byTrack = this.remoteTrackTypes?.get(track.id);
+      if (byTrack) return byTrack;
+
+      const index = transceivers.indexOf(event?.transceiver);
+      const videoReceiverTransceivers = transceivers.filter(t => t.receiver?.track?.kind === 'video');
+      const videoIndexByTransceiver = videoReceiverTransceivers.indexOf(event?.transceiver);
+      if (videoIndexByTransceiver === 0 || index === 0) return 'screen';
+      if (videoIndexByTransceiver === 1 || index === 1) return 'camera';
 
       const label = String(track.label || '').toLowerCase();
       if (/screen|display|window|tab|monitor|projection/.test(label)) return 'screen';
       if (/camera|front|back|facetime/.test(label)) return 'camera';
 
-      // Capture side always adds screen before camera.
+      // Final deterministic fallback: capture side adds screen video first.
       return videos.length >= 2 && videoIndex === 0 ? 'screen' : 'camera';
     };
 
@@ -158,7 +203,6 @@ export function installRemoteDeviceFix(studio) {
       if (type === 'screen') this.remoteScreenStream.addTrack(track);
       else this.remoteCameraStream.addTrack(track);
     }
-
     this.publishRemoteStreams();
   };
 
@@ -169,38 +213,43 @@ export function installRemoteDeviceFix(studio) {
     const cameraTracks = this.remoteCameraStream?.getVideoTracks?.() || [];
     const audioTracks = this.remoteAudioStream?.getAudioTracks?.() || [];
 
-    const playVideo = async (video, label) => {
-      if (!video) return;
+    const attachAndPlay = async (video, stream, label) => {
+      if (!video || !stream?.getVideoTracks?.().length) return;
+      video.pause?.();
+      video.srcObject = stream;
       video.autoplay = true;
       video.muted = true;
       video.playsInline = true;
       video.setAttribute('playsinline', '');
-      try { await video.play(); } catch (_) {}
-      const retry = () => video.play().catch(() => {});
-      video.addEventListener('loadedmetadata', retry, { once: true });
-      video.addEventListener('canplay', retry, { once: true });
+      const attempt = () => video.play().catch(() => {});
+      attempt();
+      video.addEventListener('loadedmetadata', attempt, { once: true });
+      video.addEventListener('canplay', attempt, { once: true });
       video.addEventListener('playing', () => this.setStatus(`REMOTE_${label}_PLAYING`), { once: true });
     };
 
-    if (screenVideo && screenTracks.length) {
-      // Dedicated stream: the compositor can never accidentally draw camera
-      // frames as the fullscreen screen layer.
-      screenVideo.srcObject = new MediaStream([screenTracks[0]]);
-      playVideo(screenVideo, 'SCREEN');
-      screenTracks[0].onunmute = () => playVideo(screenVideo, 'SCREEN');
+    if (screenTracks.length) {
+      const screenStream = new MediaStream([screenTracks[0]]);
+      attachAndPlay(screenVideo, screenStream, 'SCREEN');
+      screenTracks[0].onunmute = () => attachAndPlay(screenVideo, screenStream, 'SCREEN');
       screenTracks[0].onended = () => this.setStatus('REMOTE_SCREEN_ENDED');
-
       const studio = window.payuuStudio;
       if (studio?.compositor) studio.compositor.isScreenActive = true;
       document.getElementById('sourceCardRemote')?.classList.remove('hidden');
       studio?.updatePlaceholderVisibility?.();
+
+      // Keep the screen stream separate from camera. Audio is added only to the
+      // program stream, never to the fullscreen video element.
+      this.remoteStream = new MediaStream([screenTracks[0], ...audioTracks]);
+      this.onRemoteStream?.(this.remoteStream);
+    } else {
+      this.setStatus('REMOTE_SCREEN_TRACK_MISSING');
     }
 
-    if (cameraVideo && cameraTracks.length) {
-      cameraVideo.srcObject = new MediaStream([cameraTracks[0]]);
-      playVideo(cameraVideo, 'CAMERA');
-      cameraTracks[0].onunmute = () => playVideo(cameraVideo, 'CAMERA');
-
+    if (cameraTracks.length) {
+      const cameraStream = new MediaStream([cameraTracks[0]]);
+      attachAndPlay(cameraVideo, cameraStream, 'CAMERA');
+      cameraTracks[0].onunmute = () => attachAndPlay(cameraVideo, cameraStream, 'CAMERA');
       const studio = window.payuuStudio;
       if (studio?.compositor) {
         studio.compositor.isCameraActive = true;
@@ -209,7 +258,9 @@ export function installRemoteDeviceFix(studio) {
         studio.sourceCardCamera?.classList.remove('hidden');
         studio.updatePlaceholderVisibility?.();
       }
-      this.onRemoteCamera?.(new MediaStream([cameraTracks[0]]));
+      this.onRemoteCamera?.(cameraStream);
+    } else {
+      this.setStatus('REMOTE_CAMERA_TRACK_MISSING');
     }
 
     if (audioTracks.length) {
@@ -225,14 +276,8 @@ export function installRemoteDeviceFix(studio) {
       audio.srcObject = new MediaStream(audioTracks);
       audio.muted = false;
       audio.volume = 1;
-      audio.play().catch(() => {});
+      audio.play().catch(() => this.setStatus('REMOTE_AUDIO_PLAY_PENDING'));
       this.onRemoteAudio?.(this.remoteAudioStream);
-    }
-
-    if (screenTracks.length) {
-      const program = new MediaStream([screenTracks[0], ...audioTracks]);
-      this.remoteStream = program;
-      this.onRemoteStream?.(program);
     }
 
     const micButton = document.getElementById('btnRemoteMicToggle');
