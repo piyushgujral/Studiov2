@@ -1,35 +1,34 @@
 import { PayuuStudio } from './studio.js';
 import { setupRemoteDeviceEnhancements } from './remote/remoteDeviceEnhancements.js';
+import { installRemoteDeviceFix } from './remote/remoteDeviceFix.js';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const basePath = (path) => `${BASE_URL}${String(path).replace(/^\//, '')}`;
 
 async function loadPayuuConfig() {
   const fallback = {
-    apiBase: window.location.origin,
+    apiBase: 'https://payuu-remote-signaling.piyushgujral04.workers.dev',
     whipEndpoint: '',
     authToken: '',
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   };
-
   try {
     const response = await fetch(basePath('payuu-config.json'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const config = await response.json();
     return { ...fallback, ...config, apiBase: config.apiBase || fallback.apiBase };
   } catch (error) {
-    console.warn('[Payuu] Runtime config unavailable; using same-origin defaults.', error);
+    console.warn('[Payuu] Runtime config unavailable; using remote signaling defaults.', error);
     return fallback;
   }
 }
 
 function ensureCaptureVideoElements() {
-  const definitions = [
+  [
     { id: 'rawCameraVideo', label: 'camera' },
     { id: 'rawScreenVideo', label: 'screen' },
     { id: 'remoteDeviceVideo', label: 'remote device' }
-  ];
-  definitions.forEach(({ id, label }) => {
+  ].forEach(({ id, label }) => {
     let video = document.getElementById(id);
     if (video) return;
     video = document.createElement('video');
@@ -39,14 +38,7 @@ function ensureCaptureVideoElements() {
     video.playsInline = true;
     video.setAttribute('aria-hidden', 'true');
     video.setAttribute('title', `${label} capture source`);
-    video.style.position = 'fixed';
-    video.style.width = '1px';
-    video.style.height = '1px';
-    video.style.left = '-10px';
-    video.style.top = '-10px';
-    video.style.opacity = '0';
-    video.style.pointerEvents = 'none';
-    video.style.zIndex = '-1';
+    video.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;opacity:0;pointer-events:none;z-index:-1;';
     document.body.appendChild(video);
   });
 }
@@ -85,6 +77,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.PAYUU_CONFIG = await loadPayuuConfig();
   ensureCaptureVideoElements();
   window.payuuStudio = new PayuuStudio();
+  // The compatibility layer is installed after the manager is constructed and
+  // before any capture session can be started.
+  installRemoteDeviceFix(window.payuuStudio);
   normalizeRemoteDeviceLabels();
   setupRemoteDeviceEnhancements(window.payuuStudio);
 
