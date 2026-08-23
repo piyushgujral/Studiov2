@@ -47,8 +47,18 @@ export class ScreenCapture {
   }
 
   attachRemoteStream(stream) {
-    this.stop();
     if (!stream) return;
+
+    // IMPORTANT: a remote MediaStream belongs to the WebRTC connection.
+    // Do NOT call stop() on the old stream here: its tracks may be the same
+    // WebRTC tracks that are being re-published after metadata/track events.
+    // Stopping them makes the remote screen disappear while the camera may
+    // continue to work.
+    if (this.videoElement) {
+      this.videoElement.pause();
+      this.videoElement.srcObject = null;
+    }
+
     this.stream = stream;
     this.videoElement.srcObject = stream;
     prepareVideoElement(this.videoElement, { muted: true });
@@ -57,12 +67,27 @@ export class ScreenCapture {
     this.isRemote = true;
     this.hasAudio = stream.getAudioTracks().length > 0;
     const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) videoTrack.onended = () => this.stop();
+    if (videoTrack) videoTrack.onended = () => {
+      // The WebRTC manager owns remote tracks; only clear the presentation.
+      if (this.isRemote) {
+        this.videoElement?.pause();
+        if (this.videoElement) this.videoElement.srcObject = null;
+        this.isActive = false;
+        this.hasAudio = false;
+        this.isRemote = false;
+        this.onStatusChange?.(false, null, false, true);
+      }
+    };
     this.onStatusChange?.(true, stream, this.hasAudio, true);
   }
 
   stop() {
-    this.stream?.getTracks().forEach(track => track.stop());
+    // Local display-capture tracks are owned by ScreenCapture and can be
+    // stopped here. Remote WebRTC tracks are owned by RemoteDeviceManager
+    // and must never be stopped by this presentation layer.
+    if (!this.isRemote) {
+      this.stream?.getTracks().forEach(track => track.stop());
+    }
     this.stream = null;
     if (this.videoElement) {
       this.videoElement.pause();
