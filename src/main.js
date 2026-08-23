@@ -1,5 +1,6 @@
 import { PayuuStudio } from './studio.js';
 import { installRemoteDeviceFix } from './remote/remoteDeviceFix.js';
+import { BrowserOverlayManager } from './overlays/browserOverlayManager.js';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const basePath = (path) => `${BASE_URL}${String(path).replace(/^\//, '')}`;
@@ -77,11 +78,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   ensureCaptureVideoElements();
   window.payuuStudio = new PayuuStudio();
 
-  // Install the final WebRTC routing layer AFTER PayuuStudio construction.
-  // Do not install the legacy enhancements afterwards: they replace the fixed
-  // createPeer/rebuild/publish methods and can route screen into the camera.
+  // Final remote-media routing layer. Legacy enhancement wrappers are not
+  // installed after this because they can overwrite the fixed MID routing.
   installRemoteDeviceFix(window.payuuStudio);
   normalizeRemoteDeviceLabels();
+  window.payuuBrowserOverlay = new BrowserOverlayManager();
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
