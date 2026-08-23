@@ -1,4 +1,5 @@
 import { PayuuStudio } from './studio.js';
+import { setupRemoteDeviceEnhancements } from './remote/remoteDeviceEnhancements.js';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const basePath = (path) => `${BASE_URL}${String(path).replace(/^\//, '')}`;
@@ -15,11 +16,7 @@ async function loadPayuuConfig() {
     const response = await fetch(basePath('payuu-config.json'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const config = await response.json();
-    return {
-      ...fallback,
-      ...config,
-      apiBase: config.apiBase || fallback.apiBase
-    };
+    return { ...fallback, ...config, apiBase: config.apiBase || fallback.apiBase };
   } catch (error) {
     console.warn('[Payuu] Runtime config unavailable; using same-origin defaults.', error);
     return fallback;
@@ -32,11 +29,9 @@ function ensureCaptureVideoElements() {
     { id: 'rawScreenVideo', label: 'screen' },
     { id: 'remoteDeviceVideo', label: 'remote device' }
   ];
-
   definitions.forEach(({ id, label }) => {
     let video = document.getElementById(id);
     if (video) return;
-
     video = document.createElement('video');
     video.id = id;
     video.autoplay = true;
@@ -72,7 +67,6 @@ function normalizeRemoteDeviceLabels() {
     ['iPhone sends its screen and available audio directly to the Payuu Studio running on your iPad.', 'This device can send its camera, screen and microphone directly to the Payuu Studio control device.'],
     ['Keep this page open. Screen/audio capabilities depend on your iOS/browser version.', 'Keep this page open while capturing. Screen, camera and microphone capabilities depend on the device and browser.']
   ];
-
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const nodes = [];
   let node;
@@ -82,7 +76,6 @@ function normalizeRemoteDeviceLabels() {
     replacements.forEach(([from, to]) => { value = value.split(from).join(to); });
     textNode.nodeValue = value;
   });
-
   document.querySelectorAll('[title]').forEach(el => {
     replacements.forEach(([from, to]) => { el.title = el.title.split(from).join(to); });
   });
@@ -93,6 +86,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   ensureCaptureVideoElements();
   window.payuuStudio = new PayuuStudio();
   normalizeRemoteDeviceLabels();
+  setupRemoteDeviceEnhancements(window.payuuStudio);
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker
